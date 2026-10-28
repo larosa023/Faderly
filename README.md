@@ -31,12 +31,13 @@ Uninstall from **Settings → Apps → Installed apps**.
 
 ## Releasing a new version
 
-Releases are fully automated by GitHub Actions ([`release.yml`](.github/workflows/release.yml)):
+Releases are fully automated by GitHub Actions ([`release.yml`](.github/workflows/release.yml)). Bump the version in [`src/Faderly/Faderly.csproj`](src/Faderly/Faderly.csproj) and push to `main`:
 
-```bash
-git tag v0.2.0
-git push origin v0.2.0
+```xml
+<Version>0.2.0</Version>
 ```
+
+(Pushing a tag like `v0.2.0`, or running the workflow from the Actions tab, also works. If that version is already released, the workflow does nothing.)
 
 The workflow builds a self-contained `win-x64` app, packages it with [Velopack](https://velopack.io), and publishes a GitHub Release containing:
 

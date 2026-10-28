@@ -1,13 +1,23 @@
 name: Release
 
-# Push a tag like v1.2.3 to build Faderly and publish Faderly-win-Setup.exe
-# (plus the update packages the built-in updater downloads) to GitHub Releases.
+# Publishes Faderly-win-Setup.exe (plus the packages the built-in updater downloads)
+# to GitHub Releases. Runs when:
+#   - <Version> in src/Faderly/Faderly.csproj changes on main and that version
+#     hasn't been released yet, or
+#   - a tag like v1.2.3 is pushed, or
+#   - it's started by hand from the Actions tab.
 on:
   push:
+    branches: [main]
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -15,18 +25,35 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Work out version
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v=$(grep -oE '<Version>[^<]+' src/Faderly/Faderly.csproj | sed 's/<Version>//')
+          fi
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release v$v already exists; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing v$v"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-dotnet@v5
+        if: steps.version.outputs.skip == 'false'
         with:
           dotnet-version: |
             8.0.x
             9.0.x
 
-      - name: Read version from tag
-        id: version
-        shell: bash
-        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
       - name: Publish app
+        if: steps.version.outputs.skip == 'false'
         run: >
           dotnet publish src/Faderly/Faderly.csproj
           -c Release -r win-x64 --self-contained true
@@ -34,13 +61,16 @@ jobs:
           -o publish
 
       - name: Install Velopack CLI
+        if: steps.version.outputs.skip == 'false'
         run: dotnet tool install -g vpk --version 1.2.161
 
       # Pulls the previous release so vpk can build small delta updates.
       - name: Download previous release
+        if: steps.version.outputs.skip == 'false'
         run: vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pack installer
+        if: steps.version.outputs.skip == 'false'
         run: >
           vpk pack
           -u Faderly
@@ -51,6 +81,7 @@ jobs:
           -i src/Faderly/Assets/Faderly.ico
 
       - name: Upload to GitHub Releases
+        if: steps.version.outputs.skip == 'false'
         run: >
           vpk upload github
           --repoUrl https://github.com/${{ github.repository }}

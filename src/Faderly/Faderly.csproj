@@ -16,7 +16,7 @@
     <ApplicationIcon>Assets\Faderly.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
 
-    <!-- Overridden by CI from the git tag (v1.2.3 -> 1.2.3) -->
+    <!-- Bump this and push to main to publish a new release + auto-update -->
     <Version>0.1.0</Version>
     <Product>Faderly</Product>
     <Description>A clean, modern volume mixer for Windows.</Description>

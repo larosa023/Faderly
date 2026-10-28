@@ -15,9 +15,9 @@
 
 - **Per-app volume.** Every app playing audio gets its own fader, mute button and live level meter. Apps with several audio streams (browsers, games) are grouped into one row.
 - **Master volume and output switching.** Change the default playback device right from the mixer.
-- **Lives in the tray.** Click the tray icon or press **Ctrl + Alt + M** to pop it open; click away or press **Esc** to hide it.
+- **Lives in the tray, or as a regular app.** By default it's a tray popup: click the tray icon or press **Ctrl + Alt + M**, and click away or press **Esc** to hide it. Prefer a normal window? Click the pop-out button in the header (or **Settings → Window mode**, or the tray menu) to get a draggable app window with a taskbar button that stays open. It remembers where you put it.
 - **Scroll to adjust.** Mouse wheel over any fader moves it 2% (hold Shift for 10%).
-- **Light and dark.** Follows your Windows app theme.
+- **Themes.** System (follows Windows light/dark), Dark, Light, Midnight (true black), Nord, Ocean, Forest, Sunset and Rosé. Pick one in **Settings → Appearance**; it switches instantly.
 - **Updates itself.** Faderly checks GitHub Releases in the background, downloads new versions, and shows **Restart to update** when one is ready. You can also check manually in Settings.
 - **Start with Windows** (on by default, toggle in Settings or the tray menu).
 

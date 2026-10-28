@@ -12,6 +12,7 @@ namespace Faderly
         private readonly bool _startHidden;
         private WinForms.NotifyIcon? _tray;
         private WinForms.ToolStripMenuItem? _startupItem;
+        private WinForms.ToolStripMenuItem? _windowModeItem;
         private MainWindow? _window;
         private MixerViewModel? _vm;
         private UpdateService? _updater;
@@ -34,9 +35,8 @@ namespace Faderly
                 args.Handled = true;
             };
 
-            ThemeManager.Apply(Resources);
-
             var settings = SettingsStore.Load();
+            ThemeManager.Apply(Resources, settings.Theme);
             StartupManager.Apply(settings.StartWithWindows);
 
             _updater = new UpdateService();
@@ -85,6 +85,20 @@ namespace Faderly
                 if (_vm != null) _vm.StartWithWindows = _startupItem.Checked;
             };
             menu.Items.Add(_startupItem);
+
+            _windowModeItem = new WinForms.ToolStripMenuItem("Window mode")
+            {
+                Checked = settings.WindowMode,
+                CheckOnClick = true
+            };
+            _windowModeItem.CheckedChanged += (_, _) =>
+            {
+                if (_vm == null || _windowModeItem == null) return;
+                if (_vm.IsWindowMode == _windowModeItem.Checked) return;
+                _vm.IsWindowMode = _windowModeItem.Checked;
+                _window?.ShowMixer();
+            };
+            menu.Items.Add(_windowModeItem);
             menu.Items.Add("Check for updates", null, async (_, _) =>
             {
                 if (_updater == null) return;
@@ -98,6 +112,7 @@ namespace Faderly
             menu.Opening += (_, _) =>
             {
                 if (_vm != null && _startupItem != null) _startupItem.Checked = _vm.StartWithWindows;
+                if (_vm != null && _windowModeItem != null) _windowModeItem.Checked = _vm.IsWindowMode;
             };
 
             _tray = new WinForms.NotifyIcon

@@ -9,6 +9,15 @@ namespace Faderly.Services
         public bool StartWithWindows { get; set; } = true;
         public bool AutoCheckUpdates { get; set; } = true;
         public bool ShowSystemSounds { get; set; } = true;
+
+        /// <summary>Theme key from ThemeManager.Themes, or "System".</summary>
+        public string Theme { get; set; } = "System";
+
+        /// <summary>false = tray popup (default), true = regular app window.</summary>
+        public bool WindowMode { get; set; }
+
+        public double? WindowLeft { get; set; }
+        public double? WindowTop { get; set; }
     }
 
     /// <summary>Loads and saves settings as JSON in %AppData%\Faderly.</summary>

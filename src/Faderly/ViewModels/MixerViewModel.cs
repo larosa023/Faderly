@@ -34,6 +34,9 @@ namespace Faderly.ViewModels
 
         public event EventHandler? QuitRequested;
 
+        /// <summary>Raised when switching between tray popup and app window.</summary>
+        public event EventHandler? WindowModeChanged;
+
         public MixerViewModel(AppSettings settings, UpdateService updater)
         {
             _settings = settings;
@@ -49,6 +52,13 @@ namespace Faderly.ViewModels
             OpenGitHubCommand = new RelayCommand(() => OpenUri(UpdateService.RepoUrl));
             OpenSoundSettingsCommand = new RelayCommand(() => OpenUri("ms-settings:sound"));
             QuitCommand = new RelayCommand(() => QuitRequested?.Invoke(this, EventArgs.Empty));
+            ToggleWindowModeCommand = new RelayCommand(() => IsWindowMode = !IsWindowMode);
+            SelectThemeCommand = new RelayCommand(p => SelectTheme(p as ThemeOption));
+
+            Themes.Add(new ThemeOption(ThemeManager.SystemKey, "System"));
+            foreach (var t in ThemeManager.Themes)
+                Themes.Add(new ThemeOption(t.Key, t.Name));
+            MarkSelectedTheme();
 
             _slowTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(900) };
             _slowTimer.Tick += (_, _) => Refresh();
@@ -66,7 +76,33 @@ namespace Faderly.ViewModels
         public ObservableCollection<AppSessionGroup> Apps { get; } = new();
         public ObservableCollection<DeviceItem> Devices { get; } = new();
 
+        public ObservableCollection<ThemeOption> Themes { get; } = new();
+
         public bool HasApps => Apps.Count > 0;
+
+        public AppSettings Settings => _settings;
+
+        /// <summary>true = regular app window with a taskbar button; false = tray popup.</summary>
+        public bool IsWindowMode
+        {
+            get => _settings.WindowMode;
+            set
+            {
+                if (_settings.WindowMode == value) return;
+                _settings.WindowMode = value;
+                SettingsStore.Save(_settings);
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(WindowModeGlyph));
+                OnPropertyChanged(nameof(WindowModeTip));
+                WindowModeChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public string WindowModeGlyph => IsWindowMode ? "\uE73F" : "\uE8A7";
+        public string WindowModeTip => IsWindowMode ? "Switch to tray popup" : "Open as a window";
+
+        public string CurrentThemeName =>
+            Themes.FirstOrDefault(t => t.IsSelected)?.Name ?? "System";
         public string HotkeyText => "Ctrl + Alt + M";
 
         public string DeviceName
@@ -200,6 +236,27 @@ namespace Faderly.ViewModels
         public ICommand OpenGitHubCommand { get; }
         public ICommand OpenSoundSettingsCommand { get; }
         public ICommand QuitCommand { get; }
+        public ICommand ToggleWindowModeCommand { get; }
+        public ICommand SelectThemeCommand { get; }
+
+        private void SelectTheme(ThemeOption? option)
+        {
+            if (option == null) return;
+            _settings.Theme = option.Key;
+            SettingsStore.Save(_settings);
+            var app = System.Windows.Application.Current;
+            if (app != null) ThemeManager.Apply(app.Resources, option.Key);
+            MarkSelectedTheme();
+        }
+
+        private void MarkSelectedTheme()
+        {
+            foreach (var t in Themes)
+                t.IsSelected = string.Equals(t.Key, _settings.Theme, StringComparison.OrdinalIgnoreCase);
+            if (!Themes.Any(t => t.IsSelected) && Themes.Count > 0)
+                Themes[0].IsSelected = true;
+            OnPropertyChanged(nameof(CurrentThemeName));
+        }
 
         // ---------- Window visibility drives refresh rate ----------
 
@@ -217,7 +274,7 @@ namespace Faderly.ViewModels
                 _meterTimer.Stop();
                 _slowTimer.Interval = TimeSpan.FromSeconds(4);
                 IsDeviceListOpen = false;
-                IsSettingsOpen = false;
+                if (!IsWindowMode) IsSettingsOpen = false;
             }
         }
 

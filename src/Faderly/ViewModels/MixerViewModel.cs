@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Threading;
 using Faderly.Services;
 using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 
 namespace Faderly.ViewModels
 {

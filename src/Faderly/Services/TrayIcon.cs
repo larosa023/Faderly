@@ -12,6 +12,7 @@ namespace Faderly.Services
     internal sealed class TrayIcon : IDisposable
     {
         private const int CallbackMessage = 0x8000 + 0x10; // WM_APP + 0x10
+        private const int WM_LBUTTONDOWN = 0x0201;
         private const int WM_LBUTTONUP = 0x0202;
         private const int WM_RBUTTONUP = 0x0205;
         private const int NIN_BALLOONUSERCLICK = 0x0405;
@@ -60,6 +61,7 @@ namespace Faderly.Services
         private bool _disposed;
         private int _retries;
 
+        public event EventHandler? LeftButtonDown;
         public event EventHandler? LeftClick;
         public event EventHandler? RightClick;
         public event EventHandler? BalloonClick;
@@ -95,6 +97,9 @@ namespace Faderly.Services
             };
             if (!TryAdd()) _retryTimer.Start();
         }
+
+        /// <summary>The hidden window that receives tray messages.</summary>
+        public IntPtr Handle => _window.Handle;
 
         public void ShowBalloon(string title, string text)
         {
@@ -132,6 +137,14 @@ namespace Faderly.Services
         {
             if (msg == CallbackMessage)
             {
+                // Button-down is handled immediately (not queued) so it's recorded before the click.
+                if ((int)(lParam.ToInt64() & 0xFFFF) == WM_LBUTTONDOWN)
+                {
+                    LeftButtonDown?.Invoke(this, EventArgs.Empty);
+                    handled = true;
+                    return IntPtr.Zero;
+                }
+
                 EventHandler? handler = (int)(lParam.ToInt64() & 0xFFFF) switch
                 {
                     WM_LBUTTONUP => LeftClick,

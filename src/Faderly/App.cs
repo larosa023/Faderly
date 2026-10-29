@@ -71,7 +71,12 @@ namespace Faderly
                 $"Version {updater.AvailableVersion} is downloaded. Open Faderly and click Restart to update.");
             // Remove the tray icon before the updater exits the process (no ghost icon left behind);
             // put it back if the update couldn't be applied.
-            updater.Restarting += (_, _) => { _tray?.Dispose(); _tray = null; };
+            updater.Restarting += (_, _) =>
+            {
+                try { _window?.SaveState(); } catch { }
+                _tray?.Dispose();
+                _tray = null;
+            };
             updater.RestartFailed += (_, _) => { if (_tray == null) CreateTray(); };
             updater.StartAutomaticChecks(settings.AutoCheckUpdates);
 
@@ -94,8 +99,10 @@ namespace Faderly
             var window = _window;
             if (window == null) return;
             _tray = new TrayIcon("Faderly");
-            _tray.LeftClick += (_, _) => window.ToggleMixer();
-            _tray.RightClick += (_, _) => window.ShowTrayMenu();
+            var tray = _tray;
+            tray.LeftButtonDown += (_, _) => window.OnTrayButtonDown();
+            tray.LeftClick += (_, _) => window.ToggleMixer();
+            tray.RightClick += (_, _) => window.ShowTrayMenu(tray.Handle);
             _tray.BalloonClick += (_, _) => window.ShowMixer();
         }
 
@@ -125,6 +132,7 @@ namespace Faderly
                 Log.Error("Startup rescue failed", ex);
             }
 
+            _window?.AllowClose();
             MessageBox.Show(
                 $"Faderly couldn't start.\n\n{error.Message}\n\nDetails were saved to:\n{Log.FilePath}",
                 "Faderly", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -133,6 +141,7 @@ namespace Faderly
 
         private void Quit()
         {
+            _window?.AllowClose();
             Cleanup();
             Shutdown();
         }
@@ -149,6 +158,13 @@ namespace Faderly
             try { _showSignal?.Dispose(); } catch { }
             try { _window?.DisposeNative(); } catch { }
             try { _vm?.Dispose(); } catch { }
+        }
+
+        protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+        {
+            // Signing out / shutting down: let the window close normally.
+            _window?.AllowClose();
+            base.OnSessionEnding(e);
         }
 
         protected override void OnExit(ExitEventArgs e)

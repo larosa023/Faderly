@@ -15,6 +15,9 @@ namespace Faderly
         private static bool _isFirstRun;
         private static bool _justUpdated;
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool AllowSetForegroundWindow(int processId);
+
         [STAThread]
         public static void Main(string[] args)
         {
@@ -42,6 +45,9 @@ namespace Faderly
                 // Already running: ask the existing instance to show itself.
                 try
                 {
+                    // Only the program the user just launched may bring a window to the front;
+                    // hand that right to the running instance so its popup gets focus.
+                    AllowSetForegroundWindow(-1);
                     using var signal = EventWaitHandle.OpenExisting(ShowSignalName);
                     signal.Set();
                 }

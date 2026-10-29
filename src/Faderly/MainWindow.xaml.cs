@@ -31,6 +31,8 @@ namespace Faderly
         private IntPtr _hwnd;
         private bool _hotkeyRegistered;
         private double _slideFrom = 14;
+        private bool _allowClose;
+        private bool _trayDownWhileOpen;
 
         public MainWindow(MixerViewModel vm)
         {
@@ -68,6 +70,31 @@ namespace Faderly
         }
 
         private bool IsWindowMode => _vm.IsWindowMode;
+
+        /// <summary>Lets the window actually close (only when the app is quitting).</summary>
+        public void AllowClose() => _allowClose = true;
+
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            // Alt+F4 or "Close window" on the taskbar: hide to the tray instead of destroying the
+            // window (which would lose the hotkey and leave the tray icon pointing at nothing).
+            if (!_allowClose)
+            {
+                e.Cancel = true;
+                HideMixer();
+                return;
+            }
+            base.OnClosing(e);
+        }
+
+        /// <summary>Flush the window position and settings to disk (e.g. right before an update restart).</summary>
+        public void SaveState()
+        {
+            _saveTimer.Stop();
+            RememberPosition();
+            _saveTimer.Stop();
+            SettingsStore.Save(_vm.Settings);
+        }
 
         // ---------- Show / hide ----------
 
@@ -112,7 +139,17 @@ namespace Faderly
             _vm.SetWindowVisible(false);
         }
 
-        /// <summary>Tray click.</summary>
+        /// <summary>
+        /// Tray button pressed. Clicking the tray hides the popup (it loses focus) before the click
+        /// completes, so remember here whether it was open, however long the button is held.
+        /// </summary>
+        public void OnTrayButtonDown()
+        {
+            _trayDownWhileOpen = !IsWindowMode &&
+                (IsVisible || (DateTime.UtcNow - _lastHiddenUtc).TotalMilliseconds < 350);
+        }
+
+        /// <summary>Tray click (button released).</summary>
         public void ToggleMixer()
         {
             if (IsWindowMode)
@@ -122,21 +159,19 @@ namespace Faderly
                 return;
             }
 
-            if (IsVisible)
+            bool wasOpen = _trayDownWhileOpen;
+            _trayDownWhileOpen = false;
+            if (IsVisible || wasOpen)
             {
                 HideMixer();
                 return;
             }
-
-            // Clicking the tray icon deactivates (and hides) the popup a moment before the
-            // click arrives; don't immediately reopen it in that case.
-            if ((DateTime.UtcNow - _lastHiddenUtc).TotalMilliseconds < 350) return;
             ShowMixer();
         }
 
         // ---------- Tray menu ----------
 
-        public void ShowTrayMenu()
+        public void ShowTrayMenu(IntPtr fallbackHwnd)
         {
             if (FindResource("TrayMenu") is not ContextMenu menu) return;
             if (menu.IsOpen) menu.IsOpen = false;
@@ -148,6 +183,8 @@ namespace Faderly
             // Without this the menu won't close when you click elsewhere on the desktop.
             if (PresentationSource.FromVisual(menu) is HwndSource src)
                 Native.SetForegroundWindow(src.Handle);
+            else if (fallbackHwnd != IntPtr.Zero)
+                Native.SetForegroundWindow(fallbackHwnd);
         }
 
         private void TrayOpen_Click(object sender, RoutedEventArgs e) => ShowMixer();

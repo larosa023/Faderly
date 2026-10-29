@@ -358,7 +358,10 @@ namespace Faderly.ViewModels
             }
             catch (Exception ex)
             {
+                // Usually a device mid-plug; keep the current state and try again next tick.
                 Log.WarnOnce("Enumerating devices", ex);
+                foreach (var d in active) d.Dispose();
+                return;
             }
 
             try

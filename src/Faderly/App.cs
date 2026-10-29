@@ -1,27 +1,28 @@
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using Faderly.Services;
 using Faderly.ViewModels;
-using WinForms = System.Windows.Forms;
 
 namespace Faderly
 {
     public sealed class App : Application
     {
         private readonly bool _startHidden;
-        private WinForms.NotifyIcon? _tray;
-        private WinForms.ToolStripMenuItem? _startupItem;
-        private WinForms.ToolStripMenuItem? _windowModeItem;
+        private readonly bool _justUpdated;
+        private TrayIcon? _tray;
         private MainWindow? _window;
         private MixerViewModel? _vm;
         private UpdateService? _updater;
         private EventWaitHandle? _showSignal;
         private RegisteredWaitHandle? _showWait;
+        private bool _cleanedUp;
 
-        public App(bool startHidden)
+        public App(bool startHidden, bool justUpdated)
         {
             _startHidden = startHidden;
+            _justUpdated = justUpdated;
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
         }
 
@@ -31,10 +32,25 @@ namespace Faderly
 
             DispatcherUnhandledException += (_, args) =>
             {
-                // Keep the tray app alive on unexpected UI errors.
+                // Keep the tray app alive on unexpected UI errors, but record them.
+                Log.Error("Unhandled UI exception", args.Exception);
                 args.Handled = true;
             };
 
+            try
+            {
+                Start();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Startup failed", ex);
+                Cleanup();
+                _ = RescueAsync(ex);
+            }
+        }
+
+        private void Start()
+        {
             var settings = SettingsStore.Load();
             ThemeManager.Apply(Resources, settings.Theme);
             StartupManager.Apply(settings.StartWithWindows);
@@ -44,131 +60,100 @@ namespace Faderly
             _vm.QuitRequested += (_, _) => Quit();
 
             _window = new MainWindow(_vm);
-            _window.InitializeHotkey();
+            _window.InitializeNative();
 
-            CreateTray(settings);
+            var window = _window;
+            CreateTray();
 
-            _updater.UpdateDownloaded += (_, _) =>
-            {
-                _tray?.ShowBalloonTip(
-                    4000,
-                    "Faderly update ready",
-                    $"Version {_updater.AvailableVersion} is downloaded. Open Faderly and click Restart to update.",
-                    WinForms.ToolTipIcon.Info);
-            };
-            _updater.Restarting += (_, _) => DisposeTray();
-            _updater.StartAutomaticChecks(settings.AutoCheckUpdates);
+            var updater = _updater;
+            updater.UpdateDownloaded += (_, _) => _tray?.ShowBalloon(
+                "Faderly update ready",
+                $"Version {updater.AvailableVersion} is downloaded. Open Faderly and click Restart to update.");
+            // Remove the tray icon before the updater exits the process (no ghost icon left behind);
+            // put it back if the update couldn't be applied.
+            updater.Restarting += (_, _) => { _tray?.Dispose(); _tray = null; };
+            updater.RestartFailed += (_, _) => { if (_tray == null) CreateTray(); };
+            updater.StartAutomaticChecks(settings.AutoCheckUpdates);
 
             // A second launch signals us to show the window.
             _showSignal = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowSignalName);
             _showWait = ThreadPool.RegisterWaitForSingleObject(_showSignal, (_, _) =>
                 Dispatcher.BeginInvoke(new Action(() => _window?.ShowMixer())), null, Timeout.Infinite, false);
 
+            if (_justUpdated)
+                _tray?.ShowBalloon("Faderly updated", $"You're now on version {updater.CurrentVersion}.");
+
             if (!_startHidden)
-                _window.ShowMixer();
+                window.ShowMixer();
+
+            Log.Info($"Started v{updater.CurrentVersion} (hidden: {_startHidden}, window mode: {settings.WindowMode})");
         }
 
-        private void CreateTray(AppSettings settings)
+        private void CreateTray()
         {
-            var menu = new WinForms.ContextMenuStrip();
-            menu.Items.Add("Open Faderly", null, (_, _) => _window?.ShowMixer());
-            menu.Items.Add("Sound settings", null, (_, _) => _vm?.OpenSoundSettingsCommand.Execute(null));
-            menu.Items.Add(new WinForms.ToolStripSeparator());
-
-            _startupItem = new WinForms.ToolStripMenuItem("Start with Windows")
-            {
-                Checked = settings.StartWithWindows,
-                CheckOnClick = true
-            };
-            _startupItem.CheckedChanged += (_, _) =>
-            {
-                if (_vm != null) _vm.StartWithWindows = _startupItem.Checked;
-            };
-            menu.Items.Add(_startupItem);
-
-            _windowModeItem = new WinForms.ToolStripMenuItem("Window mode")
-            {
-                Checked = settings.WindowMode,
-                CheckOnClick = true
-            };
-            _windowModeItem.CheckedChanged += (_, _) =>
-            {
-                if (_vm == null || _windowModeItem == null) return;
-                if (_vm.IsWindowMode == _windowModeItem.Checked) return;
-                _vm.IsWindowMode = _windowModeItem.Checked;
-                _window?.ShowMixer();
-            };
-            menu.Items.Add(_windowModeItem);
-            menu.Items.Add("Check for updates", null, async (_, _) =>
-            {
-                if (_updater == null) return;
-                _window?.ShowMixer();
-                if (_vm != null) _vm.IsSettingsOpen = true;
-                await _updater.CheckAsync(userInitiated: true);
-            });
-            menu.Items.Add(new WinForms.ToolStripSeparator());
-            menu.Items.Add("Quit", null, (_, _) => Quit());
-
-            menu.Opening += (_, _) =>
-            {
-                if (_vm != null && _startupItem != null) _startupItem.Checked = _vm.StartWithWindows;
-                if (_vm != null && _windowModeItem != null) _windowModeItem.Checked = _vm.IsWindowMode;
-            };
-
-            _tray = new WinForms.NotifyIcon
-            {
-                Icon = LoadTrayIcon(),
-                Text = "Faderly",
-                ContextMenuStrip = menu,
-                Visible = true
-            };
-            _tray.MouseClick += (_, args) =>
-            {
-                if (args.Button == WinForms.MouseButtons.Left)
-                    _window?.ToggleMixer();
-            };
-            _tray.BalloonTipClicked += (_, _) => _window?.ShowMixer();
+            var window = _window;
+            if (window == null) return;
+            _tray = new TrayIcon("Faderly");
+            _tray.LeftClick += (_, _) => window.ToggleMixer();
+            _tray.RightClick += (_, _) => window.ShowTrayMenu();
+            _tray.BalloonClick += (_, _) => window.ShowMixer();
         }
 
-        private static System.Drawing.Icon LoadTrayIcon()
+        /// <summary>
+        /// Last line of defence: if this version can't start, try to pull a newer (fixed) release
+        /// before giving up, so a bad build never needs a manual reinstall.
+        /// </summary>
+        private async Task RescueAsync(Exception error)
         {
             try
             {
-                var info = GetResourceStream(new Uri("pack://application:,,,/Assets/Faderly.ico"));
-                if (info != null)
+                var manager = UpdateService.CreateManager();
+                if (manager != null && manager.IsInstalled)
                 {
-                    using var stream = info.Stream;
-                    // Ask for a small size so Windows picks the crisp 16/20/24px frame.
-                    int size = WinForms.SystemInformation.SmallIconSize.Width;
-                    return new System.Drawing.Icon(stream, size, size);
+                    var info = await manager.CheckForUpdatesAsync();
+                    if (info != null)
+                    {
+                        Log.Info($"Startup rescue: installing v{info.TargetFullRelease.Version}");
+                        await manager.DownloadUpdatesAsync(info);
+                        manager.ApplyUpdatesAndRestart(info.TargetFullRelease);
+                        return;
+                    }
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                Log.Error("Startup rescue failed", ex);
             }
-            return System.Drawing.SystemIcons.Application;
-        }
 
-        private void DisposeTray()
-        {
-            if (_tray == null) return;
-            _tray.Visible = false;
-            _tray.Dispose();
-            _tray = null;
+            MessageBox.Show(
+                $"Faderly couldn't start.\n\n{error.Message}\n\nDetails were saved to:\n{Log.FilePath}",
+                "Faderly", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(1);
         }
 
         private void Quit()
         {
-            DisposeTray();
-            _showWait?.Unregister(null);
-            _window?.DisposeHotkey();
-            _vm?.Dispose();
+            Cleanup();
             Shutdown();
+        }
+
+        /// <summary>Releases the tray icon, hotkey and audio objects. Safe to call more than once.</summary>
+        private void Cleanup()
+        {
+            if (_cleanedUp) return;
+            _cleanedUp = true;
+
+            try { _tray?.Dispose(); } catch { }
+            _tray = null;
+            try { _showWait?.Unregister(null); } catch { }
+            try { _showSignal?.Dispose(); } catch { }
+            try { _window?.DisposeNative(); } catch { }
+            try { _vm?.Dispose(); } catch { }
         }
 
         protected override void OnExit(ExitEventArgs e)
         {
-            DisposeTray();
+            Cleanup();
             base.OnExit(e);
         }
     }

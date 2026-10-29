@@ -22,6 +22,7 @@
     <Window.Resources>
         <local:BoolToVisibilityConverter x:Key="BoolVis" />
         <local:MuteGlyphConverter x:Key="MuteGlyph" />
+        <local:InverseBoolConverter x:Key="Not" />
         <FontFamily x:Key="IconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
 
         <!-- ===== Buttons ===== -->
@@ -123,18 +124,17 @@
             </Setter>
         </Style>
 
+        <!-- Thumb uses a painted soft shadow instead of a DropShadowEffect: same look, no per-frame shader work. -->
         <Style x:Key="FaderThumb" TargetType="Thumb">
             <Setter Property="Focusable" Value="False" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Thumb">
                         <Grid Width="18" Height="18" Background="Transparent">
+                            <Ellipse Margin="-1,0,-1,-2" Fill="#1F000000" />
+                            <Ellipse Margin="0,0,0,-1" Fill="#14000000" />
                             <Ellipse Fill="{DynamicResource ThumbBrush}"
-                                     Stroke="{DynamicResource ThumbBorderBrush}" StrokeThickness="1">
-                                <Ellipse.Effect>
-                                    <DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.25" />
-                                </Ellipse.Effect>
-                            </Ellipse>
+                                     Stroke="{DynamicResource ThumbBorderBrush}" StrokeThickness="1" />
                             <Ellipse x:Name="Dot" Width="8" Height="8"
                                      Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Slider}}" />
                         </Grid>
@@ -265,6 +265,92 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="HorizontalAlignment" Value="Center" />
         </Style>
+
+        <!-- ===== Tray right-click menu (themed to match the app) ===== -->
+        <ContextMenu x:Key="TrayMenu" Placement="MousePoint" HasDropShadow="False">
+            <ContextMenu.Resources>
+                <Style TargetType="MenuItem">
+                    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                    <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
+                    <Setter Property="FontSize" Value="13" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="MenuItem">
+                                <Border x:Name="Bd" Background="Transparent" CornerRadius="6"
+                                        Padding="8,7,18,7" Margin="0,1" MinWidth="190">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="26" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock x:Name="Glyph" FontFamily="{StaticResource IconFont}" FontSize="13"
+                                                   VerticalAlignment="Center" HorizontalAlignment="Left"
+                                                   Foreground="{DynamicResource SubtextBrush}"
+                                                   Text="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}" />
+                                        <TextBlock x:Name="Check" FontFamily="{StaticResource IconFont}" FontSize="13"
+                                                   VerticalAlignment="Center" HorizontalAlignment="Left"
+                                                   Foreground="{DynamicResource AccentBrush}" Text="&#xE73E;"
+                                                   Visibility="Collapsed" />
+                                        <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True"
+                                                          VerticalAlignment="Center" />
+                                    </Grid>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsHighlighted" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBrush}" />
+                                    </Trigger>
+                                    <Trigger Property="IsCheckable" Value="True">
+                                        <Setter TargetName="Glyph" Property="Visibility" Value="Collapsed" />
+                                    </Trigger>
+                                    <Trigger Property="IsChecked" Value="True">
+                                        <Setter TargetName="Check" Property="Visibility" Value="Visible" />
+                                    </Trigger>
+                                    <Trigger Property="IsEnabled" Value="False">
+                                        <Setter TargetName="Bd" Property="Opacity" Value="0.45" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+                <Style TargetType="Separator">
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="Separator">
+                                <Border Height="1" Margin="8,4" Background="{DynamicResource BorderBrush}" />
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </ContextMenu.Resources>
+            <ContextMenu.Template>
+                <ControlTemplate TargetType="ContextMenu">
+                    <Grid Margin="12">
+                        <Border CornerRadius="10" Background="{DynamicResource WindowBrush}">
+                            <Border.Effect>
+                                <DropShadowEffect BlurRadius="16" ShadowDepth="2" Direction="270" Opacity="0.3" />
+                            </Border.Effect>
+                            <Border.CacheMode>
+                                <BitmapCache />
+                            </Border.CacheMode>
+                        </Border>
+                        <Border CornerRadius="10" Background="{DynamicResource WindowBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Padding="5">
+                            <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
+                        </Border>
+                    </Grid>
+                </ControlTemplate>
+            </ContextMenu.Template>
+            <MenuItem Header="Open Faderly" Tag="&#xE767;" Click="TrayOpen_Click" FontWeight="SemiBold" />
+            <MenuItem Header="Sound settings" Tag="&#xE9E9;" Click="TraySound_Click" />
+            <Separator />
+            <MenuItem Header="Window mode" IsCheckable="True" IsChecked="{Binding IsWindowMode, Mode=TwoWay}"
+                      Click="TrayWindowMode_Click" />
+            <MenuItem Header="Start with Windows" IsCheckable="True" IsChecked="{Binding StartWithWindows, Mode=TwoWay}" />
+            <MenuItem Header="Check for updates" Tag="&#xE895;" Click="TrayUpdates_Click" />
+            <Separator />
+            <MenuItem Header="Quit" Tag="&#xE7E8;" Click="TrayQuit_Click" />
+        </ContextMenu>
     </Window.Resources>
 
     <!-- 14px margin leaves room for the drop shadow -->
@@ -273,11 +359,14 @@
             <TranslateTransform x:Name="ShellTranslate" />
         </Grid.RenderTransform>
 
-        <!-- Shadow layer (separate so text inside stays crisp) -->
+        <!-- Shadow layer. Cached as a bitmap so the blur is drawn once, not every time a meter moves. -->
         <Border CornerRadius="14" Background="{DynamicResource WindowBrush}">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="22" ShadowDepth="3" Direction="270" Opacity="0.35" />
             </Border.Effect>
+            <Border.CacheMode>
+                <BitmapCache />
+            </Border.CacheMode>
         </Border>
 
         <Border CornerRadius="14" Background="{DynamicResource WindowBrush}"
@@ -285,10 +374,11 @@
             <Grid>
 
                 <!-- ==================== MIXER PAGE ==================== -->
-                <StackPanel Visibility="{Binding IsSettingsOpen, Converter={StaticResource BoolVis}, ConverterParameter=Invert}">
+                <DockPanel Visibility="{Binding IsSettingsOpen, Converter={StaticResource BoolVis}, ConverterParameter=Invert}">
 
                     <!-- Header (also the drag handle in window mode) -->
-                    <Grid Margin="2,0,0,12" Background="Transparent" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                    <Grid DockPanel.Dock="Top" Margin="2,0,0,12" Background="Transparent"
+                          MouseLeftButtonDown="Header_MouseLeftButtonDown">
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <Image Source="pack://application:,,,/Assets/Faderly.png" Width="20" Height="20"
                                    RenderOptions.BitmapScalingMode="HighQuality" />
@@ -315,7 +405,7 @@
                     </Grid>
 
                     <!-- Output device + master volume -->
-                    <Border Style="{StaticResource Card}" Padding="6,6,6,10">
+                    <Border DockPanel.Dock="Top" Style="{StaticResource Card}" Padding="6,6,6,10">
                         <StackPanel>
                             <Button Style="{StaticResource RowButton}" Command="{Binding ToggleDeviceListCommand}"
                                     ToolTip="Choose output device">
@@ -375,8 +465,7 @@
                                         Command="{Binding ToggleMasterMuteCommand}" ToolTip="Mute / unmute"
                                         FontSize="16" />
                                 <StackPanel Grid.Column="1" Margin="8,0,6,0" VerticalAlignment="Center">
-                                    <Slider x:Name="MasterSlider" Value="{Binding MasterVolume, Mode=TwoWay}"
-                                            IsEnabled="{Binding HasDevice}">
+                                    <Slider Value="{Binding MasterVolume, Mode=TwoWay}" IsEnabled="{Binding HasDevice}">
                                         <Slider.Style>
                                             <Style TargetType="Slider" BasedOn="{StaticResource Fader}">
                                                 <Style.Triggers>
@@ -400,100 +489,10 @@
                         </StackPanel>
                     </Border>
 
-                    <!-- Apps -->
-                    <TextBlock Text="Apps" Style="{StaticResource SectionLabel}" Margin="4,16,0,6" />
+                    <TextBlock DockPanel.Dock="Top" Text="Apps" Style="{StaticResource SectionLabel}" Margin="4,16,0,6" />
 
-                    <TextBlock Text="No apps are playing audio right now."
-                               Foreground="{DynamicResource SubtextBrush}" Margin="4,8,0,10"
-                               Visibility="{Binding HasApps, Converter={StaticResource BoolVis}, ConverterParameter=Invert}" />
-
-                    <ScrollViewer MaxHeight="360" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                                  Visibility="{Binding HasApps, Converter={StaticResource BoolVis}}">
-                        <ItemsControl ItemsSource="{Binding Apps}" Margin="0,0,4,0">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Border Padding="8,8,4,6" CornerRadius="10" Margin="0,0,0,2">
-                                        <Border.Style>
-                                            <Style TargetType="Border">
-                                                <Setter Property="Background" Value="Transparent" />
-                                                <Style.Triggers>
-                                                    <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
-                                                    </Trigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </Border.Style>
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-
-                                            <!-- App icon (or a letter / glyph fallback) -->
-                                            <Grid Width="30" Height="30" VerticalAlignment="Center">
-                                                <Border CornerRadius="8" Background="{DynamicResource Surface2Brush}"
-                                                        Visibility="{Binding HasIcon, Converter={StaticResource BoolVis}, ConverterParameter=Invert}">
-                                                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                               FontWeight="SemiBold" Foreground="{DynamicResource SubtextBrush}">
-                                                        <TextBlock.Style>
-                                                            <Style TargetType="TextBlock">
-                                                                <Setter Property="Text" Value="{Binding Initial}" />
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding IsSystem}" Value="True">
-                                                                        <Setter Property="Text" Value="&#xEA8F;" />
-                                                                        <Setter Property="FontFamily" Value="{StaticResource IconFont}" />
-                                                                        <Setter Property="FontSize" Value="14" />
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </TextBlock.Style>
-                                                    </TextBlock>
-                                                </Border>
-                                                <Image Source="{Binding Icon}" Width="26" Height="26"
-                                                       RenderOptions.BitmapScalingMode="HighQuality"
-                                                       Visibility="{Binding HasIcon, Converter={StaticResource BoolVis}}" />
-                                            </Grid>
-
-                                            <StackPanel Grid.Column="1" Margin="12,0,4,0" VerticalAlignment="Center">
-                                                <Grid Margin="2,0,0,0">
-                                                    <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"
-                                                               Margin="0,0,40,0" />
-                                                    <TextBlock Text="{Binding VolumeText}" HorizontalAlignment="Right"
-                                                               Foreground="{DynamicResource SubtextBrush}" />
-                                                </Grid>
-                                                <Slider Value="{Binding Volume, Mode=TwoWay}" Margin="0,1,0,0">
-                                                    <Slider.Style>
-                                                        <Style TargetType="Slider" BasedOn="{StaticResource Fader}">
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsMuted}" Value="True">
-                                                                    <Setter Property="Foreground" Value="{DynamicResource MutedFillBrush}" />
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Slider.Style>
-                                                </Slider>
-                                                <Rectangle Height="2" RadiusX="1" RadiusY="1" Margin="2,0,2,0"
-                                                           Fill="{DynamicResource MeterBrush}" Opacity="0.85"
-                                                           RenderTransformOrigin="0,0.5">
-                                                    <Rectangle.RenderTransform>
-                                                        <ScaleTransform ScaleX="{Binding Peak}" />
-                                                    </Rectangle.RenderTransform>
-                                                </Rectangle>
-                                            </StackPanel>
-
-                                            <Button Grid.Column="2" Style="{StaticResource IconButton}"
-                                                    Content="{Binding IsMuted, Converter={StaticResource MuteGlyph}}"
-                                                    Command="{Binding ToggleMuteCommand}" ToolTip="Mute / unmute" />
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </ScrollViewer>
-
-                    <!-- Update banner -->
-                    <Border Margin="0,12,0,0" CornerRadius="10" Padding="12,10"
+                    <!-- Update banner (docked before the list so the list fills what's left) -->
+                    <Border DockPanel.Dock="Bottom" Margin="0,12,0,0" CornerRadius="10" Padding="12,10"
                             Background="{DynamicResource AccentSoftBrush}"
                             Visibility="{Binding Updater.UpdateReady, Converter={StaticResource BoolVis}}">
                         <Grid>
@@ -514,7 +513,110 @@
                                     Command="{Binding RestartToUpdateCommand}" />
                         </Grid>
                     </Border>
-                </StackPanel>
+
+                    <!-- App list (fills the remaining height, scrolls when needed) -->
+                    <Grid>
+                        <TextBlock Text="No apps are playing audio right now."
+                                   Foreground="{DynamicResource SubtextBrush}" Margin="4,8,0,10"
+                                   Visibility="{Binding HasApps, Converter={StaticResource BoolVis}, ConverterParameter=Invert}" />
+
+                        <ScrollViewer MaxHeight="360" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                      Visibility="{Binding HasApps, Converter={StaticResource BoolVis}}">
+                            <ItemsControl ItemsSource="{Binding Apps}" Margin="0,0,4,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="8,8,4,6" CornerRadius="10" Margin="0,0,0,2">
+                                            <Border.Style>
+                                                <Style TargetType="Border">
+                                                    <Setter Property="Background" Value="Transparent" />
+                                                    <Style.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+                                                        </Trigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
+                                            <!-- New rows fade in instead of popping -->
+                                            <Border.Triggers>
+                                                <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                    <BeginStoryboard>
+                                                        <Storyboard>
+                                                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                             From="0" To="1" Duration="0:0:0.18" />
+                                                        </Storyboard>
+                                                    </BeginStoryboard>
+                                                </EventTrigger>
+                                            </Border.Triggers>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <!-- App icon (or a letter / glyph fallback) -->
+                                                <Grid Width="30" Height="30" VerticalAlignment="Center">
+                                                    <Border CornerRadius="8" Background="{DynamicResource Surface2Brush}"
+                                                            Visibility="{Binding HasIcon, Converter={StaticResource BoolVis}, ConverterParameter=Invert}">
+                                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                   FontWeight="SemiBold" Foreground="{DynamicResource SubtextBrush}">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Text" Value="{Binding Initial}" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsSystem}" Value="True">
+                                                                            <Setter Property="Text" Value="&#xEA8F;" />
+                                                                            <Setter Property="FontFamily" Value="{StaticResource IconFont}" />
+                                                                            <Setter Property="FontSize" Value="14" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </Border>
+                                                    <Image Source="{Binding Icon}" Width="26" Height="26"
+                                                           RenderOptions.BitmapScalingMode="HighQuality"
+                                                           Visibility="{Binding HasIcon, Converter={StaticResource BoolVis}}" />
+                                                </Grid>
+
+                                                <StackPanel Grid.Column="1" Margin="12,0,4,0" VerticalAlignment="Center">
+                                                    <Grid Margin="2,0,0,0">
+                                                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"
+                                                                   Margin="0,0,40,0" />
+                                                        <TextBlock Text="{Binding VolumeText}" HorizontalAlignment="Right"
+                                                                   Foreground="{DynamicResource SubtextBrush}" />
+                                                    </Grid>
+                                                    <Slider Value="{Binding Volume, Mode=TwoWay}" Margin="0,1,0,0">
+                                                        <Slider.Style>
+                                                            <Style TargetType="Slider" BasedOn="{StaticResource Fader}">
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsMuted}" Value="True">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource MutedFillBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Slider.Style>
+                                                    </Slider>
+                                                    <Rectangle Height="2" RadiusX="1" RadiusY="1" Margin="2,0,2,0"
+                                                               Fill="{DynamicResource MeterBrush}" Opacity="0.85"
+                                                               RenderTransformOrigin="0,0.5">
+                                                        <Rectangle.RenderTransform>
+                                                            <ScaleTransform ScaleX="{Binding Peak}" />
+                                                        </Rectangle.RenderTransform>
+                                                    </Rectangle>
+                                                </StackPanel>
+
+                                                <Button Grid.Column="2" Style="{StaticResource IconButton}"
+                                                        Content="{Binding IsMuted, Converter={StaticResource MuteGlyph}}"
+                                                        Command="{Binding ToggleMuteCommand}" ToolTip="Mute / unmute" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </Grid>
+                </DockPanel>
 
                 <!-- ==================== SETTINGS PAGE ==================== -->
                 <DockPanel Visibility="{Binding IsSettingsOpen, Converter={StaticResource BoolVis}}">
@@ -554,7 +656,7 @@
                                                 Command="{Binding DataContext.SelectThemeCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                 CommandParameter="{Binding}">
                                             <StackPanel>
-                                                <Border x:Name="Swatch" Height="46" CornerRadius="8" BorderThickness="2"
+                                                <Border Height="46" CornerRadius="8" BorderThickness="2"
                                                         Background="{Binding Background}">
                                                     <Border.Style>
                                                         <Style TargetType="Border">
@@ -656,6 +758,7 @@
                                 <StackPanel HorizontalAlignment="Right" VerticalAlignment="Center">
                                     <Button Style="{StaticResource SoftButton}" Content="Check now"
                                             Command="{Binding CheckUpdatesCommand}"
+                                            IsEnabled="{Binding Updater.IsBusy, Converter={StaticResource Not}}"
                                             Visibility="{Binding Updater.UpdateReady, Converter={StaticResource BoolVis}, ConverterParameter=Invert}" />
                                     <Button Style="{StaticResource AccentButton}" Content="Restart to update"
                                             Command="{Binding RestartToUpdateCommand}"

@@ -12,6 +12,7 @@ namespace Faderly.ViewModels
     /// </summary>
     public sealed class AppSessionGroup : ObservableObject
     {
+        private readonly List<AudioSessionControl> _sessions = new();
         private double _volume;
         private bool _isMuted;
         private double _peak;
@@ -35,8 +36,6 @@ namespace Faderly.ViewModels
 
         public ICommand ToggleMuteCommand { get; }
 
-        internal List<AudioSessionControl> Sessions { get; } = new();
-
         public double Volume
         {
             get => _volume;
@@ -49,7 +48,8 @@ namespace Faderly.ViewModels
 
                 // Dragging the slider of a muted app unmutes it, like Windows does.
                 if (_isMuted) IsMuted = false;
-                Apply(s => s.SimpleAudioVolume.Volume = (float)(value / 100.0));
+                float level = (float)(value / 100.0);
+                Apply(v => v.Volume = level);
             }
         }
 
@@ -62,7 +62,7 @@ namespace Faderly.ViewModels
             {
                 if (!SetProperty(ref _isMuted, value)) return;
                 if (_syncing) return;
-                Apply(s => s.SimpleAudioVolume.Mute = value);
+                Apply(v => v.Mute = value);
             }
         }
 
@@ -72,19 +72,37 @@ namespace Faderly.ViewModels
             private set => SetProperty(ref _peak, value);
         }
 
+        /// <summary>Replace the sessions this row controls (only touches the list if it actually changed).</summary>
+        internal void SetSessions(List<AudioSessionControl> sessions)
+        {
+            if (sessions.Count == _sessions.Count)
+            {
+                bool same = true;
+                for (int i = 0; i < sessions.Count; i++)
+                {
+                    if (!ReferenceEquals(sessions[i], _sessions[i])) { same = false; break; }
+                }
+                if (same) return;
+            }
+            _sessions.Clear();
+            _sessions.AddRange(sessions);
+        }
+
         /// <summary>Pull current volume/mute from Windows (picks up changes made elsewhere).</summary>
         internal void SyncFromSystem()
         {
-            if (Sessions.Count == 0) return;
+            if (_sessions.Count == 0) return;
+            var simple = _sessions[0].SimpleAudioVolume;
+            if (simple == null) return;
             try
             {
-                var simple = Sessions[0].SimpleAudioVolume;
                 _syncing = true;
                 Volume = simple.Volume * 100.0;
                 IsMuted = simple.Mute;
             }
             catch
             {
+                // Session went away; the next refresh removes the row.
             }
             finally
             {
@@ -95,28 +113,36 @@ namespace Faderly.ViewModels
         internal void UpdatePeak()
         {
             double max = 0;
-            foreach (var s in Sessions)
+            if (!_isMuted)
             {
-                try
+                foreach (var s in _sessions)
                 {
-                    double p = s.AudioMeterInformation.MasterPeakValue;
-                    if (p > max) max = p;
-                }
-                catch
-                {
+                    var meter = s.AudioMeterInformation;
+                    if (meter == null) continue;
+                    try
+                    {
+                        double p = meter.MasterPeakValue;
+                        if (p > max) max = p;
+                    }
+                    catch
+                    {
+                    }
                 }
             }
-            if (_isMuted) max = 0;
-            // Fast attack, smooth release.
+            // Fast attack, smooth release. Snapping tiny values to 0 means a silent app stops re-rendering.
             double next = max >= _peak ? max : Math.Max(max, _peak * 0.82);
             Peak = next < 0.004 ? 0 : next;
         }
 
-        private void Apply(Action<AudioSessionControl> action)
+        internal void ResetPeak() => Peak = 0;
+
+        private void Apply(Action<SimpleAudioVolume> action)
         {
-            foreach (var s in Sessions)
+            foreach (var s in _sessions)
             {
-                try { action(s); }
+                var simple = s.SimpleAudioVolume;
+                if (simple == null) continue;
+                try { action(simple); }
                 catch { /* session went away mid-change */ }
             }
         }

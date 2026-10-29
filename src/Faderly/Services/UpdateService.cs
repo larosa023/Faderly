@@ -32,16 +32,25 @@ namespace Faderly.Services
         /// <summary>Raised right before the app exits to install an update.</summary>
         public event EventHandler? Restarting;
 
-        public UpdateService()
+        /// <summary>Raised if applying the update failed and the app keeps running.</summary>
+        public event EventHandler? RestartFailed;
+
+        public static UpdateManager? CreateManager()
         {
             try
             {
-                _manager = new UpdateManager(new GithubSource(RepoUrl, null, false));
+                return new UpdateManager(new GithubSource(RepoUrl, null, false));
             }
-            catch
+            catch (Exception ex)
             {
-                _manager = null;
+                Log.WarnOnce("Creating update manager", ex);
+                return null;
             }
+        }
+
+        public UpdateService()
+        {
+            _manager = CreateManager();
 
             _timer = new DispatcherTimer { Interval = CheckInterval };
             _timer.Tick += async (_, _) => await CheckAsync(userInitiated: false);
@@ -105,11 +114,15 @@ namespace Faderly.Services
             private set => SetProperty(ref _busy, value);
         }
 
+        private bool _firstCheckScheduled;
+
         public void StartAutomaticChecks(bool enabled)
         {
             if (enabled && IsInstalled)
             {
                 _timer.Start();
+                if (_firstCheckScheduled) return;
+                _firstCheckScheduled = true;
                 // First check shortly after startup so launch stays snappy.
                 var first = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
                 first.Tick += async (_, _) =>
@@ -165,6 +178,7 @@ namespace Faderly.Services
             }
             catch (Exception ex)
             {
+                Log.WarnOnce("Update check", ex);
                 Status = userInitiated ? $"Couldn't check for updates: {ex.Message}" : "";
             }
             finally
@@ -183,7 +197,9 @@ namespace Faderly.Services
             }
             catch (Exception ex)
             {
+                Log.Error("Applying update", ex);
                 Status = $"Update failed: {ex.Message}";
+                RestartFailed?.Invoke(this, EventArgs.Empty);
             }
         }
     }

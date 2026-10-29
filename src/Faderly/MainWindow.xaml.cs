@@ -1,9 +1,11 @@
 using System;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using Faderly.Services;
 using Faderly.ViewModels;
 
@@ -11,7 +13,7 @@ namespace Faderly
 {
     /// <summary>
     /// The mixer. Runs in one of two modes:
-    ///  - Popup (default): tray flyout anchored bottom-right, hides when you click away.
+    ///  - Popup (default): tray flyout anchored next to the taskbar, hides when you click away.
     ///  - Window: a regular app window with a taskbar button that you can drag,
     ///    minimize and leave open. Its position is remembered.
     /// </summary>
@@ -19,11 +21,16 @@ namespace Faderly
     {
         private const int HotkeyId = 0xF4D1;
         private const uint VK_M = 0x4D;
+        private const double ScreenGap = 4;
 
         private readonly MixerViewModel _vm;
+        private readonly DispatcherTimer _saveTimer;
         private DateTime _lastHiddenUtc = DateTime.MinValue;
+        private DateTime _modeSwitchedUtc = DateTime.MinValue;
         private HwndSource? _source;
         private IntPtr _hwnd;
+        private bool _hotkeyRegistered;
+        private double _slideFrom = 14;
 
         public MainWindow(MixerViewModel vm)
         {
@@ -31,13 +38,24 @@ namespace Faderly
             _vm = vm;
             DataContext = vm;
 
+            _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+            _saveTimer.Tick += (_, _) =>
+            {
+                _saveTimer.Stop();
+                SettingsStore.Save(_vm.Settings);
+            };
+
             Deactivated += (_, _) =>
             {
-                if (!_vm.IsWindowMode) HideMixer();
+                if (IsWindowMode) return;
+                // Switching modes briefly re-parents the window, which can fire a spurious deactivate.
+                if ((DateTime.UtcNow - _modeSwitchedUtc).TotalMilliseconds < 400) return;
+                HideMixer();
             };
             SizeChanged += (_, _) =>
             {
-                if (!_vm.IsWindowMode) PositionPopup();
+                if (IsWindowMode) KeepWindowOnScreen();
+                else PositionPopup();
             };
             StateChanged += (_, _) =>
             {
@@ -59,23 +77,29 @@ namespace Faderly
             {
                 if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
                 Activate();
+                if (_hwnd != IntPtr.Zero) Native.SetForegroundWindow(_hwnd);
                 return;
             }
 
-            Opacity = 0;
+            // Refresh first so the very first frame already has the right apps and size.
+            _vm.SetWindowVisible(true);
+
             if (IsWindowMode) PositionWindow(); else PositionPopup();
             WindowState = WindowState.Normal;
             Show();
             Activate();
             if (_hwnd != IntPtr.Zero) Native.SetForegroundWindow(_hwnd);
-            _vm.SetWindowVisible(true);
 
+            // FillBehavior.Stop hands the property back to its base value (1 / 0) when done,
+            // so no animation clock keeps running in the background.
+            Opacity = 1;
             BeginAnimation(OpacityProperty,
-                new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)));
+                new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)) { FillBehavior = FillBehavior.Stop });
             ShellTranslate.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
-                new DoubleAnimation(IsWindowMode ? 6 : 14, 0, TimeSpan.FromMilliseconds(220))
+                new DoubleAnimation(IsWindowMode ? 6 : _slideFrom, 0, TimeSpan.FromMilliseconds(220))
                 {
-                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+                    FillBehavior = FillBehavior.Stop
                 });
         }
 
@@ -88,7 +112,7 @@ namespace Faderly
             _vm.SetWindowVisible(false);
         }
 
-        /// <summary>Tray click / hotkey.</summary>
+        /// <summary>Tray click.</summary>
         public void ToggleMixer()
         {
             if (IsWindowMode)
@@ -110,16 +134,50 @@ namespace Faderly
             ShowMixer();
         }
 
+        // ---------- Tray menu ----------
+
+        public void ShowTrayMenu()
+        {
+            if (FindResource("TrayMenu") is not ContextMenu menu) return;
+            if (menu.IsOpen) menu.IsOpen = false;
+
+            menu.DataContext = _vm;
+            menu.Placement = PlacementMode.MousePoint;
+            menu.IsOpen = true;
+
+            // Without this the menu won't close when you click elsewhere on the desktop.
+            if (PresentationSource.FromVisual(menu) is HwndSource src)
+                Native.SetForegroundWindow(src.Handle);
+        }
+
+        private void TrayOpen_Click(object sender, RoutedEventArgs e) => ShowMixer();
+
+        private void TraySound_Click(object sender, RoutedEventArgs e) =>
+            _vm.OpenSoundSettingsCommand.Execute(null);
+
+        // IsChecked is bound two-way, so the mode has already flipped by the time Click fires.
+        private void TrayWindowMode_Click(object sender, RoutedEventArgs e) => ShowMixer();
+
+        private void TrayUpdates_Click(object sender, RoutedEventArgs e)
+        {
+            ShowMixer();
+            _vm.IsSettingsOpen = true;
+            _vm.CheckUpdatesCommand.Execute(null);
+        }
+
+        private void TrayQuit_Click(object sender, RoutedEventArgs e) => _vm.QuitCommand.Execute(null);
+
         // ---------- Modes ----------
 
         private void OnModeChanged()
         {
             bool wasVisible = IsVisible;
+            _modeSwitchedUtc = DateTime.UtcNow;
             ApplyModeChrome();
 
             if (IsWindowMode)
             {
-                // Popup -> window: pop it out a little left of the tray corner so it feels "detached".
+                // Popup -> window: pop it out a little away from the tray corner so it feels "detached".
                 if (_vm.Settings.WindowLeft == null || _vm.Settings.WindowTop == null)
                 {
                     var area = SystemParameters.WorkArea;
@@ -139,6 +197,7 @@ namespace Faderly
 
             if (wasVisible)
             {
+                if (!IsVisible) Show();
                 Activate();
                 _vm.SetWindowVisible(true);
             }
@@ -157,24 +216,35 @@ namespace Faderly
                 ShowInTaskbar = false;
                 Topmost = true;
             }
+            AllowTaskbarMinimize();
         }
 
-        /// <summary>Popup: anchor to the bottom-right of the work area, above the taskbar.</summary>
+        /// <summary>
+        /// Popup: anchor next to the taskbar on the primary screen (bottom-right by default,
+        /// but follows a taskbar moved to the top or left).
+        /// </summary>
         private void PositionPopup()
         {
             var area = SystemParameters.WorkArea;
+            double screenW = SystemParameters.PrimaryScreenWidth;
+
+            MaxHeight = Math.Max(320, area.Height - ScreenGap);
             double height = ActualHeight > 0 ? ActualHeight : 420;
-            Left = area.Right - Width - 4;
-            Top = area.Bottom - height - 4;
+
+            bool taskbarTop = area.Top > 0.5;
+            bool taskbarLeft = area.Left > 0.5 && area.Right >= screenW - 0.5;
+
+            Left = taskbarLeft ? area.Left + ScreenGap : area.Right - Width - ScreenGap;
+            Top = taskbarTop ? area.Top + ScreenGap : area.Bottom - height - ScreenGap;
+            _slideFrom = taskbarTop ? -14 : 14;
         }
 
         /// <summary>Window: restore the saved position, kept on-screen.</summary>
         private void PositionWindow()
         {
-            var screen = new Rect(
-                SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
-                SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
+            MaxHeight = Math.Max(320, SystemParameters.VirtualScreenHeight);
 
+            var screen = VirtualScreen;
             double? left = _vm.Settings.WindowLeft;
             double? top = _vm.Settings.WindowTop;
 
@@ -193,6 +263,19 @@ namespace Faderly
             }
         }
 
+        /// <summary>If the window grows (more apps), nudge it up rather than letting it run off-screen.</summary>
+        private void KeepWindowOnScreen()
+        {
+            if (!IsVisible || WindowState != WindowState.Normal) return;
+            var screen = VirtualScreen;
+            double overflow = Top + ActualHeight - screen.Bottom;
+            if (overflow > 0) Top = Math.Max(screen.Top, Top - overflow);
+        }
+
+        private static Rect VirtualScreen => new(
+            SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
+            SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
+
         private void RememberPosition(bool force = false)
         {
             if (!IsWindowMode || (!IsVisible && !force) || WindowState != WindowState.Normal) return;
@@ -200,27 +283,16 @@ namespace Faderly
             if (_vm.Settings.WindowLeft == Left && _vm.Settings.WindowTop == Top) return;
             _vm.Settings.WindowLeft = Left;
             _vm.Settings.WindowTop = Top;
+            // Debounced so dragging doesn't write the settings file dozens of times a second.
             _saveTimer.Stop();
             _saveTimer.Start();
         }
 
-        // Debounce settings writes while the window is being dragged.
-        private readonly System.Windows.Threading.DispatcherTimer _saveTimer = CreateSaveTimer();
-
-        private static System.Windows.Threading.DispatcherTimer CreateSaveTimer()
+        /// <summary>Borderless windows lack WS_MINIMIZEBOX, so clicking the taskbar button wouldn't minimize them.</summary>
+        private void AllowTaskbarMinimize()
         {
-            var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
-            return timer;
-        }
-
-        protected override void OnInitialized(EventArgs e)
-        {
-            base.OnInitialized(e);
-            _saveTimer.Tick += (_, _) =>
-            {
-                _saveTimer.Stop();
-                SettingsStore.Save(_vm.Settings);
-            };
+            if (_hwnd == IntPtr.Zero) return;
+            Native.AddWindowStyle(_hwnd, Native.WS_MINIMIZEBOX);
         }
 
         // ---------- Title bar buttons (window mode) ----------
@@ -235,29 +307,34 @@ namespace Faderly
 
         private void CloseToTray_Click(object sender, RoutedEventArgs e) => HideMixer();
 
-        // ---------- Global hotkey (Ctrl + Alt + M) ----------
+        // ---------- Native handle: global hotkey (Ctrl + Alt + M) ----------
 
-        public void InitializeHotkey()
+        public void InitializeNative()
         {
             _hwnd = new WindowInteropHelper(this).EnsureHandle();
             _source = HwndSource.FromHwnd(_hwnd);
             _source?.AddHook(WndProc);
-            Native.RegisterHotKey(_hwnd, HotkeyId, Native.MOD_CONTROL | Native.MOD_ALT | Native.MOD_NOREPEAT, VK_M);
+            _hotkeyRegistered = Native.RegisterHotKey(_hwnd, HotkeyId,
+                Native.MOD_CONTROL | Native.MOD_ALT | Native.MOD_NOREPEAT, VK_M);
+            _vm.HotkeyAvailable = _hotkeyRegistered;
+            if (!_hotkeyRegistered) Log.Info("Ctrl+Alt+M is already used by another app; hotkey disabled.");
+            AllowTaskbarMinimize();
         }
 
-        public void DisposeHotkey()
+        public void DisposeNative()
         {
-            if (_hwnd != IntPtr.Zero) Native.UnregisterHotKey(_hwnd, HotkeyId);
+            if (_hwnd != IntPtr.Zero && _hotkeyRegistered) Native.UnregisterHotKey(_hwnd, HotkeyId);
+            _hotkeyRegistered = false;
             _source?.RemoveHook(WndProc);
+            _saveTimer.Stop();
             RememberPosition();
             SettingsStore.Save(_vm.Settings);
         }
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
-            if (msg == Native.WM_HOTKEY && wParam.ToInt32() == HotkeyId)
+            if (msg == Native.WM_HOTKEY && wParam.ToInt64() == HotkeyId)
             {
-                // Hotkey doesn't steal focus, so "active" means the user is looking at it.
                 if (IsVisible && WindowState != WindowState.Minimized && IsActive) HideMixer();
                 else ShowMixer();
                 handled = true;

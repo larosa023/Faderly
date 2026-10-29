@@ -51,11 +51,15 @@ namespace Faderly.Services
         {
             try
             {
+                // Write to a temp file and swap it in, so a crash mid-write can't corrupt settings.
                 Directory.CreateDirectory(Folder);
-                File.WriteAllText(FilePath, JsonSerializer.Serialize(settings, Options));
+                string temp = FilePath + ".tmp";
+                File.WriteAllText(temp, JsonSerializer.Serialize(settings, Options));
+                File.Move(temp, FilePath, overwrite: true);
             }
-            catch
+            catch (Exception ex)
             {
+                Log.WarnOnce("Saving settings", ex);
             }
         }
     }

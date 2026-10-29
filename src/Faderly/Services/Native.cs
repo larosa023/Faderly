@@ -63,6 +63,76 @@ namespace Faderly.Services
             }
         }
 
+        // ---------- Icons ----------
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern int SHDefExtractIconW(string iconFile, int index, uint flags,
+            out IntPtr largeIcon, out IntPtr smallIcon, uint iconSize);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool DestroyIcon(IntPtr hIcon);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr LoadIcon(IntPtr hInstance, IntPtr iconName);
+
+        public static readonly IntPtr IDI_APPLICATION = new(32512);
+
+        /// <summary>
+        /// First icon of an exe at (roughly) the requested pixel size, or IntPtr.Zero.
+        /// The caller owns the handle and must DestroyIcon it.
+        /// </summary>
+        public static IntPtr ExtractIcon(string path, int size)
+        {
+            try
+            {
+                uint sizes = (uint)(size & 0xFFFF) | ((uint)(size & 0xFFFF) << 16);
+                int hr = SHDefExtractIconW(path, 0, 0, out IntPtr large, out IntPtr small, sizes);
+                if (small != IntPtr.Zero) DestroyIcon(small);
+                if (hr != 0)
+                {
+                    if (large != IntPtr.Zero) DestroyIcon(large);
+                    return IntPtr.Zero;
+                }
+                return large;
+            }
+            catch
+            {
+                return IntPtr.Zero;
+            }
+        }
+
+        // ---------- Misc window helpers ----------
+
+        public const int SM_CXSMICON = 49;
+
+        [DllImport("user32.dll")]
+        public static extern int GetSystemMetrics(int index);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern int RegisterWindowMessage(string message);
+
+        private const int GWL_STYLE = -16;
+        public const int WS_MINIMIZEBOX = 0x00020000;
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+        private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+        private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int index, IntPtr value);
+
+        public static void AddWindowStyle(IntPtr hwnd, int style)
+        {
+            try
+            {
+                long current = GetWindowLongPtr(hwnd, GWL_STYLE).ToInt64();
+                if ((current & style) == style) return;
+                SetWindowLongPtr(hwnd, GWL_STYLE, new IntPtr(current | (long)style));
+            }
+            catch
+            {
+            }
+        }
+
         // ---------- Global hotkey ----------
 
         public const int WM_HOTKEY = 0x0312;

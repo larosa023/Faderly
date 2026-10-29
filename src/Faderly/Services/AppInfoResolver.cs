@@ -12,9 +12,12 @@ namespace Faderly.Services
 {
     public sealed record AppInfo(string Key, string Name, string? ExePath, ImageSource? Icon);
 
-    /// <summary>Turns a process id into a friendly name + icon, with caching.</summary>
+    /// <summary>Turns a process id into a friendly name + icon. Results are cached per exe.</summary>
     public static class AppInfoResolver
     {
+        // Big enough to stay sharp at 250% display scaling; downscaled smoothly otherwise.
+        private const int IconSize = 64;
+
         private static readonly Dictionary<string, AppInfo> ByPath = new(StringComparer.OrdinalIgnoreCase);
 
         public static AppInfo Resolve(uint pid, string? sessionDisplayName)
@@ -74,18 +77,23 @@ namespace Faderly.Services
 
         private static ImageSource? LoadIcon(string path)
         {
+            IntPtr hIcon = Native.ExtractIcon(path, IconSize);
+            if (hIcon == IntPtr.Zero) return null; // falls back to the letter tile
             try
             {
-                using var icon = System.Drawing.Icon.ExtractAssociatedIcon(path);
-                if (icon == null) return null;
                 var source = Imaging.CreateBitmapSourceFromHIcon(
-                    icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                    hIcon, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
                 source.Freeze();
                 return source;
             }
-            catch
+            catch (Exception ex)
             {
+                Log.WarnOnce("Icon " + Path.GetFileName(path), ex);
                 return null;
+            }
+            finally
+            {
+                Native.DestroyIcon(hIcon);
             }
         }
     }

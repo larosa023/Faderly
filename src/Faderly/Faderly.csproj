@@ -4,7 +4,6 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
-    <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -17,10 +16,16 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
 
     <!-- Bump this and push to main to publish a new release + auto-update -->
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Product>Faderly</Product>
     <Description>A clean, modern volume mixer for Windows.</Description>
     <Copyright>Copyright © 2026 Anthony</Copyright>
+
+    <!-- Lightweight: English-only framework resources (drops ~a dozen localized folders),
+         no background GC thread, and the debug info embedded so crash logs keep line numbers. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <DebugType>embedded</DebugType>
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,7 +34,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Resource Include="Assets\Faderly.ico" />
     <Resource Include="Assets\Faderly.png" />
   </ItemGroup>
 

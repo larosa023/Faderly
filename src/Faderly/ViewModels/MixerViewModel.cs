@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Faderly.Services;
 using NAudio.CoreAudioApi;
@@ -11,17 +13,49 @@ using NAudio.CoreAudioApi.Interfaces;
 
 namespace Faderly.ViewModels
 {
+    /// <summary>
+    /// Everything the mixer shows. Designed to cost nothing while hidden: no timers run until the
+    /// window is on screen, and audio sessions are identified once and then reused.
+    /// </summary>
     public sealed class MixerViewModel : ObservableObject, IDisposable
     {
         private const string SystemKey = "__system__";
 
+        /// <summary>An audio session we've already identified, so it isn't re-resolved every refresh.</summary>
+        private sealed class SessionEntry
+        {
+            public SessionEntry(AudioSessionControl control, string groupKey, string name,
+                                ImageSource? icon, bool isSystem, uint pid, bool hidden)
+            {
+                Control = control;
+                GroupKey = groupKey;
+                Name = name;
+                Icon = icon;
+                IsSystem = isSystem;
+                Pid = pid;
+                Hidden = hidden;
+            }
+
+            public AudioSessionControl Control { get; }
+            public string GroupKey { get; }
+            public string Name { get; }
+            public ImageSource? Icon { get; }
+            public bool IsSystem { get; }
+            public uint Pid { get; }
+            /// <summary>Never shown (e.g. Faderly's own session).</summary>
+            public bool Hidden { get; }
+        }
+
         private readonly MMDeviceEnumerator _enumerator = new();
+        private readonly Dispatcher _dispatcher;
         private readonly DispatcherTimer _slowTimer;
         private readonly DispatcherTimer _meterTimer;
         private readonly AppSettings _settings;
         private readonly uint _ownPid = (uint)Environment.ProcessId;
+        private readonly Dictionary<string, SessionEntry> _sessionCache = new(StringComparer.Ordinal);
 
         private MMDevice? _device;
+        private AudioEndpointVolume? _endpointVolume;
         private string _deviceName = "No output device";
         private string _deviceGlyph = "";
         private double _masterVolume;
@@ -30,7 +64,10 @@ namespace Faderly.ViewModels
         private bool _syncingMaster;
         private bool _isDeviceListOpen;
         private bool _isSettingsOpen;
-        private bool _isWindowVisible;
+        private volatile bool _isWindowVisible;
+        private int _masterSyncQueued;
+        private bool _hotkeyAvailable = true;
+        private bool _hasApps;
 
         public event EventHandler? QuitRequested;
 
@@ -40,6 +77,7 @@ namespace Faderly.ViewModels
         public MixerViewModel(AppSettings settings, UpdateService updater)
         {
             _settings = settings;
+            _dispatcher = Dispatcher.CurrentDispatcher;
             Updater = updater;
 
             ToggleMasterMuteCommand = new RelayCommand(() => MasterMuted = !MasterMuted);
@@ -60,14 +98,15 @@ namespace Faderly.ViewModels
                 Themes.Add(new ThemeOption(t.Key, t.Name));
             MarkSelectedTheme();
 
-            _slowTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(900) };
+            // Both timers only run while the mixer is on screen (see SetWindowVisible).
+            _slowTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
             _slowTimer.Tick += (_, _) => Refresh();
 
             _meterTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
             _meterTimer.Tick += (_, _) => UpdateMeters();
 
+            // Warm up once at startup (devices, sessions, icons) so the first open is instant.
             Refresh();
-            _slowTimer.Start();
         }
 
         // ---------- Bindable state ----------
@@ -75,10 +114,13 @@ namespace Faderly.ViewModels
         public UpdateService Updater { get; }
         public ObservableCollection<AppSessionGroup> Apps { get; } = new();
         public ObservableCollection<DeviceItem> Devices { get; } = new();
-
         public ObservableCollection<ThemeOption> Themes { get; } = new();
 
-        public bool HasApps => Apps.Count > 0;
+        public bool HasApps
+        {
+            get => _hasApps;
+            private set => SetProperty(ref _hasApps, value);
+        }
 
         public AppSettings Settings => _settings;
 
@@ -98,12 +140,19 @@ namespace Faderly.ViewModels
             }
         }
 
-        public string WindowModeGlyph => IsWindowMode ? "\uE73F" : "\uE8A7";
+        public string WindowModeGlyph => IsWindowMode ? "" : "";
         public string WindowModeTip => IsWindowMode ? "Switch to tray popup" : "Open as a window";
 
-        public string CurrentThemeName =>
-            Themes.FirstOrDefault(t => t.IsSelected)?.Name ?? "System";
-        public string HotkeyText => "Ctrl + Alt + M";
+        public bool HotkeyAvailable
+        {
+            get => _hotkeyAvailable;
+            set
+            {
+                if (SetProperty(ref _hotkeyAvailable, value)) OnPropertyChanged(nameof(HotkeyText));
+            }
+        }
+
+        public string HotkeyText => _hotkeyAvailable ? "Ctrl + Alt + M" : "Ctrl + Alt + M (used by another app)";
 
         public string DeviceName
         {
@@ -128,14 +177,15 @@ namespace Faderly.ViewModels
                 if (!SetProperty(ref _masterVolume, value)) return;
                 OnPropertyChanged(nameof(MasterVolumeText));
                 OnPropertyChanged(nameof(MasterGlyph));
-                if (_syncingMaster || _device == null) return;
+                if (_syncingMaster || _endpointVolume == null) return;
                 try
                 {
                     if (_masterMuted) MasterMuted = false;
-                    _device.AudioEndpointVolume.MasterVolumeLevelScalar = (float)(value / 100.0);
+                    _endpointVolume.MasterVolumeLevelScalar = (float)(value / 100.0);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Log.WarnOnce("Set master volume", ex);
                 }
             }
         }
@@ -149,9 +199,9 @@ namespace Faderly.ViewModels
             {
                 if (!SetProperty(ref _masterMuted, value)) return;
                 OnPropertyChanged(nameof(MasterGlyph));
-                if (_syncingMaster || _device == null) return;
-                try { _device.AudioEndpointVolume.Mute = value; }
-                catch { }
+                if (_syncingMaster || _endpointVolume == null) return;
+                try { _endpointVolume.Mute = value; }
+                catch (Exception ex) { Log.WarnOnce("Set master mute", ex); }
             }
         }
 
@@ -255,26 +305,31 @@ namespace Faderly.ViewModels
                 t.IsSelected = string.Equals(t.Key, _settings.Theme, StringComparison.OrdinalIgnoreCase);
             if (!Themes.Any(t => t.IsSelected) && Themes.Count > 0)
                 Themes[0].IsSelected = true;
-            OnPropertyChanged(nameof(CurrentThemeName));
         }
 
-        // ---------- Window visibility drives refresh rate ----------
+        // ---------- Visibility drives all background work ----------
 
         public void SetWindowVisible(bool visible)
         {
-            _isWindowVisible = visible;
             if (visible)
             {
-                Refresh();
-                _slowTimer.Interval = TimeSpan.FromMilliseconds(900);
+                bool wasVisible = _isWindowVisible;
+                _isWindowVisible = true;
+                if (!wasVisible) Refresh();
+                _slowTimer.Start();
                 _meterTimer.Start();
             }
             else
             {
+                _isWindowVisible = false;
+                _slowTimer.Stop();
                 _meterTimer.Stop();
-                _slowTimer.Interval = TimeSpan.FromSeconds(4);
                 IsDeviceListOpen = false;
                 if (!IsWindowMode) IsSettingsOpen = false;
+
+                // Let meters rest at zero so they don't flash old levels on the next open.
+                MasterPeak = 0;
+                foreach (var app in Apps) app.ResetPeak();
             }
         }
 
@@ -283,44 +338,54 @@ namespace Faderly.ViewModels
         private void Refresh()
         {
             RefreshDevices();
-            if (_isWindowVisible || Apps.Count == 0)
-            {
-                SyncMaster();
-                RefreshSessions();
-            }
+            SyncMaster();
+            RefreshSessions();
         }
 
         private void RefreshDevices()
         {
-            List<MMDevice> active;
+            var active = new List<MMDevice>();
             string? defaultId = null;
             try
             {
-                active = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active).ToList();
+                foreach (var d in _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+                    active.Add(d);
                 if (active.Count > 0)
-                    defaultId = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia).ID;
-            }
-            catch
-            {
-                active = new List<MMDevice>();
-            }
-
-            // Rebuild the device list only if the set of devices changed.
-            var ids = active.Select(d => d.ID).ToList();
-            if (!ids.SequenceEqual(Devices.Select(d => d.Id)))
-            {
-                Devices.Clear();
-                foreach (var d in active)
                 {
-                    string name;
-                    try { name = d.FriendlyName; } catch { name = "Audio device"; }
-                    Devices.Add(new DeviceItem(d.ID, name));
+                    using var def = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                    defaultId = def.ID;
                 }
             }
-            foreach (var item in Devices)
-                item.IsDefault = item.Id == defaultId;
+            catch (Exception ex)
+            {
+                Log.WarnOnce("Enumerating devices", ex);
+            }
 
-            foreach (var d in active) d.Dispose();
+            try
+            {
+                // Rebuild the device list only if the set of devices changed.
+                var ids = active.Select(d => d.ID).ToList();
+                if (!ids.SequenceEqual(Devices.Select(d => d.Id)))
+                {
+                    Devices.Clear();
+                    foreach (var d in active)
+                    {
+                        string name;
+                        try { name = d.FriendlyName; } catch { name = "Audio device"; }
+                        Devices.Add(new DeviceItem(d.ID, name));
+                    }
+                }
+                foreach (var item in Devices)
+                    item.IsDefault = item.Id == defaultId;
+            }
+            catch (Exception ex)
+            {
+                Log.WarnOnce("Reading devices", ex);
+            }
+            finally
+            {
+                foreach (var d in active) d.Dispose();
+            }
 
             string? currentId = null;
             try { currentId = _device?.ID; } catch { }
@@ -331,24 +396,63 @@ namespace Faderly.ViewModels
 
         private void SwitchToDevice(string? id)
         {
-            try { _device?.Dispose(); } catch { }
-            _device = null;
-            Apps.Clear();
-            OnPropertyChanged(nameof(HasApps));
+            DetachDevice();
 
             if (id != null)
             {
-                try { _device = _enumerator.GetDevice(id); }
-                catch { _device = null; }
+                try
+                {
+                    _device = _enumerator.GetDevice(id);
+                    _endpointVolume = _device.AudioEndpointVolume;
+                    // Instant updates when the volume changes elsewhere (keyboard keys, knobs, Windows flyout).
+                    _endpointVolume.OnVolumeNotification += OnEndpointVolumeChanged;
+                }
+                catch (Exception ex)
+                {
+                    Log.WarnOnce("Opening device", ex);
+                    DetachDevice();
+                }
             }
 
             var item = Devices.FirstOrDefault(d => d.Id == id);
-            DeviceName = item?.Name ?? "No output device";
+            DeviceName = _device != null ? item?.Name ?? "Audio device" : "No output device";
             DeviceGlyph = item?.Glyph ?? "";
             OnPropertyChanged(nameof(HasDevice));
 
             SyncMaster();
             RefreshSessions();
+        }
+
+        private void DetachDevice()
+        {
+            if (_endpointVolume != null)
+            {
+                try { _endpointVolume.OnVolumeNotification -= OnEndpointVolumeChanged; } catch { }
+            }
+            _endpointVolume = null;
+
+            foreach (var entry in _sessionCache.Values)
+            {
+                try { entry.Control.Dispose(); } catch { }
+            }
+            _sessionCache.Clear();
+            Apps.Clear();
+            HasApps = false;
+
+            try { _device?.Dispose(); } catch { }
+            _device = null;
+        }
+
+        /// <summary>Called on a Windows audio thread; hop to the UI thread, coalescing bursts.</summary>
+        private void OnEndpointVolumeChanged(AudioVolumeNotificationData data)
+        {
+            if (!_isWindowVisible) return;
+            if (Interlocked.Exchange(ref _masterSyncQueued, 1) == 1) return;
+            _dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() =>
+            {
+                Interlocked.Exchange(ref _masterSyncQueued, 0);
+                if (_isWindowVisible) SyncMaster();
+            }));
         }
 
         private void SelectDevice(DeviceItem? item)
@@ -357,20 +461,24 @@ namespace Faderly.ViewModels
             if (item == null || item.IsDefault) return;
             if (Native.SetDefaultAudioDevice(item.Id))
                 RefreshDevices();
+            else
+                Log.Info("Couldn't switch default device to " + item.Name);
         }
 
         private void SyncMaster()
         {
-            if (_device == null) return;
+            if (_endpointVolume == null) return;
             try
             {
-                var ep = _device.AudioEndpointVolume;
                 _syncingMaster = true;
-                MasterVolume = ep.MasterVolumeLevelScalar * 100.0;
-                MasterMuted = ep.Mute;
+                // Always re-read the live value (never trust an event payload), so a burst of
+                // notifications while dragging can't snap the slider back to an older level.
+                MasterVolume = _endpointVolume.MasterVolumeLevelScalar * 100.0;
+                MasterMuted = _endpointVolume.Mute;
             }
-            catch
+            catch (Exception ex)
             {
+                Log.WarnOnce("Reading master volume", ex);
             }
             finally
             {
@@ -382,103 +490,138 @@ namespace Faderly.ViewModels
         {
             if (_device == null)
             {
-                if (Apps.Count > 0) { Apps.Clear(); OnPropertyChanged(nameof(HasApps)); }
+                Apps.Clear();
+                HasApps = false;
                 return;
             }
 
-            var found = new Dictionary<string, (AppInfo info, bool isSystem, List<AudioSessionControl> sessions)>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var groups = new Dictionary<string, List<SessionEntry>>(StringComparer.Ordinal);
+            var order = new List<string>();
 
             try
             {
                 var manager = _device.AudioSessionManager;
                 manager.RefreshSessions();
                 var sessions = manager.Sessions;
+                int count = sessions?.Count ?? 0;
 
-                for (int i = 0; i < sessions.Count; i++)
+                for (int i = 0; i < count; i++)
                 {
-                    AudioSessionControl s;
-                    try { s = sessions[i]; } catch { continue; }
-
+                    AudioSessionControl? fresh = null;
                     try
                     {
-                        if (s.State == AudioSessionState.AudioSessionStateExpired) continue;
+                        fresh = sessions![i];
+                        string id = fresh.GetSessionInstanceIdentifier ?? "";
 
-                        bool isSystem = s.IsSystemSoundsSession;
-                        uint pid = s.GetProcessID;
-
-                        if (isSystem)
+                        if (fresh.State == AudioSessionState.AudioSessionStateExpired)
                         {
-                            if (!_settings.ShowSystemSounds) continue;
-                            var sysInfo = new AppInfo(SystemKey, "System sounds", null, null);
-                            Add(found, sysInfo, true, s);
+                            fresh.Dispose();
                             continue;
                         }
 
-                        if (pid == _ownPid || !Native.IsProcessAlive(pid)) continue;
+                        SessionEntry? entry;
+                        if (id.Length > 0 && _sessionCache.TryGetValue(id, out entry))
+                        {
+                            // Same session as last time: keep the wrapper we already have.
+                            fresh.Dispose();
+                        }
+                        else
+                        {
+                            entry = Identify(fresh);
+                            if (id.Length > 0) _sessionCache[id] = entry;
+                        }
+                        fresh = null;
+                        if (id.Length > 0) seen.Add(id);
 
-                        var info = AppInfoResolver.Resolve(pid, s.DisplayName);
-                        Add(found, info, false, s);
+                        if (entry.Hidden) continue;
+                        if (entry.IsSystem && !_settings.ShowSystemSounds) continue;
+                        if (!entry.IsSystem && !Native.IsProcessAlive(entry.Pid)) continue;
+
+                        if (!groups.TryGetValue(entry.GroupKey, out var list))
+                        {
+                            list = new List<SessionEntry>();
+                            groups[entry.GroupKey] = list;
+                            order.Add(entry.GroupKey);
+                        }
+                        list.Add(entry);
                     }
                     catch
                     {
                         // Session vanished while we were reading it.
+                        try { fresh?.Dispose(); } catch { }
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Device unplugged mid-refresh; RefreshDevices will catch up next tick.
+                // Device unplugged mid-refresh; the next device refresh catches up.
+                Log.WarnOnce("Reading sessions", ex);
                 return;
+            }
+
+            // Forget sessions that no longer exist.
+            if (_sessionCache.Count > seen.Count)
+            {
+                foreach (var stale in _sessionCache.Keys.Where(k => !seen.Contains(k)).ToList())
+                {
+                    try { _sessionCache[stale].Control.Dispose(); } catch { }
+                    _sessionCache.Remove(stale);
+                }
             }
 
             // Remove rows whose app is gone.
             for (int i = Apps.Count - 1; i >= 0; i--)
-                if (!found.ContainsKey(Apps[i].Key))
+                if (!groups.ContainsKey(Apps[i].Key))
                     Apps.RemoveAt(i);
 
             // Update existing rows and insert new ones in sorted order.
-            foreach (var (key, entry) in found)
+            foreach (var key in order)
             {
-                var group = Apps.FirstOrDefault(a => a.Key == key);
-                if (group == null)
+                var entries = groups[key];
+                var controls = entries.Select(e => e.Control).ToList();
+                var row = Apps.FirstOrDefault(a => a.Key == key);
+                if (row == null)
                 {
-                    group = new AppSessionGroup(key, entry.info.Name, entry.info.Icon, entry.isSystem);
-                    group.Sessions.AddRange(entry.sessions);
-                    group.SyncFromSystem();
-                    Apps.Insert(SortedIndex(group), group);
+                    var first = entries[0];
+                    row = new AppSessionGroup(key, first.Name, first.Icon, first.IsSystem);
+                    row.SetSessions(controls);
+                    row.SyncFromSystem();
+                    Apps.Insert(SortedIndex(row), row);
                 }
                 else
                 {
-                    group.Sessions.Clear();
-                    group.Sessions.AddRange(entry.sessions);
-                    group.SyncFromSystem();
+                    row.SetSessions(controls);
+                    row.SyncFromSystem();
                 }
             }
 
-            OnPropertyChanged(nameof(HasApps));
+            HasApps = Apps.Count > 0;
         }
 
-        private static void Add(
-            Dictionary<string, (AppInfo info, bool isSystem, List<AudioSessionControl> sessions)> found,
-            AppInfo info, bool isSystem, AudioSessionControl session)
+        private SessionEntry Identify(AudioSessionControl s)
         {
-            if (!found.TryGetValue(info.Key, out var entry))
-            {
-                entry = (info, isSystem, new List<AudioSessionControl>());
-                found[info.Key] = entry;
-            }
-            entry.sessions.Add(session);
+            bool isSystem = s.IsSystemSoundsSession;
+            uint pid = s.GetProcessID;
+
+            if (isSystem)
+                return new SessionEntry(s, SystemKey, "System sounds", null, true, pid, hidden: false);
+            if (pid == _ownPid)
+                return new SessionEntry(s, "", "", null, false, pid, hidden: true);
+
+            var info = AppInfoResolver.Resolve(pid, s.DisplayName);
+            return new SessionEntry(s, info.Key, info.Name, info.Icon, false, pid, hidden: false);
         }
 
         /// <summary>Apps alphabetical, System sounds pinned to the bottom.</summary>
-        private int SortedIndex(AppSessionGroup group)
+        private int SortedIndex(AppSessionGroup row)
         {
+            if (row.IsSystem) return Apps.Count;
             for (int i = 0; i < Apps.Count; i++)
             {
                 var other = Apps[i];
-                if (group.IsSystem) continue;
                 if (other.IsSystem) return i;
-                if (string.Compare(group.Name, other.Name, StringComparison.CurrentCultureIgnoreCase) < 0)
+                if (string.Compare(row.Name, other.Name, StringComparison.CurrentCultureIgnoreCase) < 0)
                     return i;
             }
             return Apps.Count;
@@ -486,17 +629,17 @@ namespace Faderly.ViewModels
 
         private void UpdateMeters()
         {
-            if (_device != null)
+            var device = _device;
+            if (device != null)
             {
-                try
+                double p = 0;
+                if (!_masterMuted)
                 {
-                    double p = _masterMuted ? 0 : _device.AudioMeterInformation.MasterPeakValue;
-                    double next = p >= _masterPeak ? p : Math.Max(p, _masterPeak * 0.82);
-                    MasterPeak = next < 0.004 ? 0 : next;
+                    try { p = device.AudioMeterInformation.MasterPeakValue; }
+                    catch { }
                 }
-                catch
-                {
-                }
+                double next = p >= _masterPeak ? p : Math.Max(p, _masterPeak * 0.82);
+                MasterPeak = next < 0.004 ? 0 : next;
             }
 
             foreach (var app in Apps)
@@ -509,16 +652,18 @@ namespace Faderly.ViewModels
             {
                 Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
             }
-            catch
+            catch (Exception ex)
             {
+                Log.WarnOnce("Opening " + uri, ex);
             }
         }
 
         public void Dispose()
         {
+            _isWindowVisible = false;
             _slowTimer.Stop();
             _meterTimer.Stop();
-            try { _device?.Dispose(); } catch { }
+            DetachDevice();
             try { _enumerator.Dispose(); } catch { }
         }
     }

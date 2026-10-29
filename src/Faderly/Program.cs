@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Faderly.Services;
 using Velopack;
 
@@ -11,8 +12,8 @@ namespace Faderly
         public const string ShowSignalName = "Faderly.ShowWindow.Signal.v1";
         private const string MutexName = "Faderly.SingleInstance.v1";
 
-        public static bool IsFirstRun { get; private set; }
-        public static bool JustUpdated { get; private set; }
+        private static bool _isFirstRun;
+        private static bool _justUpdated;
 
         [STAThread]
         public static void Main(string[] args)
@@ -20,10 +21,20 @@ namespace Faderly
             // Velopack must run first: it handles install/update/uninstall hooks
             // and applies a pending update on startup.
             VelopackApp.Build()
-                .OnFirstRun(_ => IsFirstRun = true)
-                .OnRestarted(_ => JustUpdated = true)
+                .OnFirstRun(_ => _isFirstRun = true)
+                .OnRestarted(_ => _justUpdated = true)
                 .OnBeforeUninstallFastCallback(_ => StartupManager.Disable())
                 .Run();
+
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            {
+                if (e.ExceptionObject is Exception ex) Log.Error("Fatal unhandled exception", ex);
+            };
+            TaskScheduler.UnobservedTaskException += (_, e) =>
+            {
+                Log.Error("Unobserved task exception", e.Exception);
+                e.SetObserved();
+            };
 
             using var mutex = new Mutex(true, MutexName, out bool isFirstInstance);
             if (!isFirstInstance)
@@ -41,9 +52,10 @@ namespace Faderly
                 return;
             }
 
-            bool startHidden = args.Any(a => string.Equals(a, "--tray", StringComparison.OrdinalIgnoreCase));
+            bool trayArg = args.Any(a => string.Equals(a, "--tray", StringComparison.OrdinalIgnoreCase));
 
-            var app = new App(startHidden && !IsFirstRun && !JustUpdated);
+            // Sign-in launches (--tray) stay in the tray; the very first run after install opens the window.
+            var app = new App(startHidden: trayArg && !_isFirstRun, justUpdated: _justUpdated);
             app.Run();
 
             GC.KeepAlive(mutex);

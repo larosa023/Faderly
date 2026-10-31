@@ -173,8 +173,9 @@ namespace Faderly.ViewModels
         internal void Nudge(int delta)
         {
             SyncFromSystem();
-            Volume = _volume + delta;
-            if (_isMuted && delta > 0) IsMuted = false;
+            bool wasMuted = _isMuted;
+            Volume = _volume + delta;               // changing the level unmutes...
+            if (wasMuted && delta < 0) IsMuted = true; // ...except when turning it down
         }
 
         internal void ToggleMuteFromHotkey()

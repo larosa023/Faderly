@@ -23,6 +23,9 @@ namespace Faderly.Services
         /// <summary>Names of hotkeys Windows refused (usually because another app already uses the combination).</summary>
         public IReadOnlyList<string> Failed { get; private set; } = Array.Empty<string>();
 
+        /// <summary>Hotkeys skipped because another Faderly action already uses the same keys.</summary>
+        public IReadOnlyList<string> Duplicates { get; private set; } = Array.Empty<string>();
+
         public event EventHandler? FailuresChanged;
 
         public HotkeyManager()
@@ -64,10 +67,17 @@ namespace Faderly.Services
         private void RegisterAll()
         {
             var failed = new List<string>();
+            var duplicates = new List<string>();
+            var taken = new HashSet<(int, int)>();
             int id = 1;
             foreach (var reg in _wanted)
             {
                 if (!reg.Binding.IsValid) continue;
+                if (!taken.Add((reg.Binding.Modifiers, reg.Binding.Key)))
+                {
+                    duplicates.Add(reg.Name);
+                    continue;
+                }
                 uint mods = (uint)reg.Binding.Modifiers;
                 if (!reg.Repeat) mods |= Native.MOD_NOREPEAT;
                 if (Native.RegisterHotKey(_window.Handle, id, mods, (uint)reg.Binding.Key))
@@ -82,6 +92,7 @@ namespace Faderly.Services
                 id++;
             }
             Failed = failed;
+            Duplicates = duplicates;
             FailuresChanged?.Invoke(this, EventArgs.Empty);
         }
 
@@ -97,6 +108,11 @@ namespace Faderly.Services
             if (msg == Native.WM_HOTKEY && _registered.TryGetValue((int)wParam.ToInt64(), out var reg))
             {
                 handled = true;
+                // The hotkey swallows the main key, so the app underneath sees Alt (or Win) pressed and
+                // released on its own and would open its menu bar / the Start menu. Tapping an unused
+                // key in between prevents that (the same trick AutoHotkey uses).
+                if ((reg.Binding.Modifiers & (HotkeyBinding.Alt | HotkeyBinding.Win)) != 0)
+                    Native.TapMaskKey();
                 try
                 {
                     reg.Action();

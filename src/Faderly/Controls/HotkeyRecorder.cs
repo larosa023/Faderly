@@ -155,11 +155,13 @@ namespace Faderly.Controls
             Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or
             Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin;
 
-        /// <summary>Keys that make sense as a hotkey with no modifier (F-keys, media and volume keys).</summary>
+        /// <summary>
+        /// Keys that make sense as a hotkey with no modifier. Volume keys aren't included: binding a bare
+        /// Volume Up would take over the master volume keys everywhere.
+        /// </summary>
         private static bool WorksAlone(Key key) =>
-            (key >= Key.F1 && key <= Key.F24) ||
-            key is Key.VolumeUp or Key.VolumeDown or Key.VolumeMute or
-                   Key.MediaPlayPause or Key.MediaNextTrack or Key.MediaPreviousTrack or Key.MediaStop or
+            (key >= Key.F13 && key <= Key.F24) ||
+            key is Key.MediaPlayPause or Key.MediaNextTrack or Key.MediaPreviousTrack or Key.MediaStop or
                    Key.Pause or Key.Scroll;
     }
 }

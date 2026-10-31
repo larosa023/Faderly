@@ -94,6 +94,9 @@ namespace Faderly.ViewModels
         private bool _hasApps;
         private string _hotkeyWarning = "";
         private DateTime _lastSessionRefreshUtc = DateTime.MinValue;
+        private DateTime _lastDeviceRefreshUtc = DateTime.MinValue;
+        private string? _lastMissingKey;
+        private DateTime _lastMissingUtc = DateTime.MinValue;
 
         private AppSessionGroup? _expandedRow;
         private bool _expandedCanRoute;
@@ -498,10 +501,13 @@ namespace Faderly.ViewModels
 
         public bool HasHotkeyWarning => _hotkeyWarning.Length > 0;
 
-        public void SetHotkeyFailures(IReadOnlyList<string> failed) =>
-            HotkeyWarning = failed.Count == 0
-                ? ""
-                : "Already used by another app: " + string.Join(", ", failed.Distinct());
+        public void SetHotkeyFailures(IReadOnlyList<string> failed, IReadOnlyList<string> duplicates)
+        {
+            var parts = new List<string>();
+            if (duplicates.Count > 0) parts.Add("Used twice in Faderly: " + string.Join(", ", duplicates.Distinct()));
+            if (failed.Count > 0) parts.Add("Already used by another app: " + string.Join(", ", failed.Distinct()));
+            HotkeyWarning = string.Join("\n", parts);
+        }
 
         private void HotkeySettingChanged([System.Runtime.CompilerServices.CallerMemberName] string? name = null)
         {
@@ -1029,6 +1035,9 @@ namespace Faderly.ViewModels
             foreach (var key in order)
             {
                 var entries = groups[key];
+                // Prefer the session that's actually playing, then the one on the default device,
+                // so the row reads/writes the right volume after an app moved between devices.
+                entries.Sort((a, b) => Rank(b).CompareTo(Rank(a)));
                 var controls = entries.Select(e => e.Control).ToList();
                 var pids = entries.Select(e => e.Pid).Where(p => p != 0).Distinct().ToList();
 
@@ -1041,15 +1050,28 @@ namespace Faderly.ViewModels
                 row.SetSessions(controls, pids);
                 row.SyncFromSystem();
 
-                // Show which device the app plays through when it isn't the default one.
+                // Show which device the app plays through when none of its audio is on the default one.
                 string deviceId = entries[0].DeviceId;
-                row.DeviceLabel = deviceId == _defaultId
+                row.DeviceLabel = row.IsSystem || entries.Any(e => e.DeviceId == _defaultId)
                     ? ""
                     : Devices.FirstOrDefault(d => d.Id == deviceId)?.Name ?? "";
             }
 
             UpdateVisibleRows();
             _lastSessionRefreshUtc = DateTime.UtcNow;
+        }
+
+        private int Rank(SessionEntry e)
+        {
+            int rank = e.DeviceId == _defaultId ? 1 : 0;
+            try
+            {
+                if (e.Control.State == AudioSessionState.AudioSessionStateActive) rank += 2;
+            }
+            catch
+            {
+            }
+            return rank;
         }
 
         /// <summary>Sync the on-screen list with the rows, leaving out hidden apps.</summary>
@@ -1300,30 +1322,54 @@ namespace Faderly.ViewModels
         // ================= Hotkey / knob / tray-wheel actions =================
         // Each returns what the on-screen indicator should show (or null for nothing).
 
-        /// <summary>Make sure the session list is recent enough to act on (cheap when it already is).</summary>
+        /// <summary>
+        /// Make sure the session list is recent enough to act on. Throttled, so holding a hotkey
+        /// (30 repeats a second) doesn't re-scan audio devices on every repeat.
+        /// </summary>
         private void EnsureFreshSessions(string? key = null)
         {
-            bool stale = (DateTime.UtcNow - _lastSessionRefreshUtc).TotalMilliseconds > 1500;
-            if (stale || (key != null && !_rows.ContainsKey(key)))
+            var now = DateTime.UtcNow;
+            bool stale = (now - _lastSessionRefreshUtc).TotalMilliseconds > 1500;
+            bool missing = key != null && !_rows.ContainsKey(key);
+            if (missing && key == _lastMissingKey && (now - _lastMissingUtc).TotalMilliseconds < 1500)
+                missing = false; // just looked for it; it's still not playing
+            if (stale || missing)
             {
-                RefreshDevices();
+                EnsureFreshDevices(force: true);
                 RefreshSessions();
             }
+            if (key != null && !_rows.ContainsKey(key))
+            {
+                _lastMissingKey = key;
+                _lastMissingUtc = now;
+            }
+        }
+
+        /// <summary>Pick up a default output/mic changed in Windows while the mixer was hidden.</summary>
+        private void EnsureFreshDevices(bool force = false)
+        {
+            var now = DateTime.UtcNow;
+            if (!force && !_isWindowVisible && (now - _lastDeviceRefreshUtc).TotalMilliseconds < 1500) return;
+            if (_isWindowVisible && !force) return; // the 1s refresh timer is already keeping up
+            _lastDeviceRefreshUtc = now;
+            RefreshDevices();
         }
 
         public VolumeFeedback? AdjustMaster(int notches)
         {
             if (notches == 0) return null;
-            if (_endpointVolume == null) RefreshDevices();
+            EnsureFreshDevices();
             if (_endpointVolume == null) return null;
             SyncMaster();
+            bool wasMuted = _masterMuted;
             MasterVolume = _masterVolume + notches * HotkeyStep;
+            if (wasMuted && notches < 0) MasterMuted = true; // turning down shouldn't unmute
             return new VolumeFeedback(DeviceName, SpeakerGlyph(_masterVolume, _masterMuted), null, _masterVolume, _masterMuted);
         }
 
         public VolumeFeedback? ToggleMicMute()
         {
-            if (_micVolumeEndpoint == null) RefreshMicDevice();
+            EnsureFreshDevices();
             if (_micVolumeEndpoint == null)
                 return new VolumeFeedback("No microphone", "", null, -1, false, "");
             SyncMic();

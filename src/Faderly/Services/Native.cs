@@ -142,6 +142,26 @@ namespace Faderly.Services
             }
         }
 
+        // ---------- Menu mask key ----------
+
+        [DllImport("user32.dll")]
+        private static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extraInfo);
+
+        private const byte VK_MASK = 0xE8; // unassigned virtual key
+        private const uint KEYEVENTF_KEYUP = 0x0002;
+
+        public static void TapMaskKey()
+        {
+            try
+            {
+                keybd_event(VK_MASK, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_MASK, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            }
+            catch
+            {
+            }
+        }
+
         // ---------- Foreground app ----------
 
         [DllImport("user32.dll")]

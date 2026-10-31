@@ -71,7 +71,8 @@ namespace Faderly
 
             var vm = _vm;
             _hotkeys = new HotkeyManager();
-            _hotkeys.FailuresChanged += (_, _) => vm.SetHotkeyFailures(_hotkeys?.Failed ?? Array.Empty<string>());
+            _hotkeys.FailuresChanged += (_, _) => vm.SetHotkeyFailures(
+                _hotkeys?.Failed ?? Array.Empty<string>(), _hotkeys?.Duplicates ?? Array.Empty<string>());
             vm.HotkeysChanged += (_, _) => ApplyHotkeys();
             // While a hotkey box is listening, release global hotkeys so the keys reach it.
             HotkeyRecorder.RecordingStarted += OnRecordingStarted;

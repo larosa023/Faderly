@@ -12,6 +12,7 @@ namespace Faderly.Services
     internal sealed class TrayIcon : IDisposable
     {
         private const int CallbackMessage = 0x8000 + 0x10; // WM_APP + 0x10
+        private const int WM_MOUSEMOVE = 0x0200;
         private const int WM_LBUTTONDOWN = 0x0201;
         private const int WM_LBUTTONUP = 0x0202;
         private const int WM_RBUTTONUP = 0x0205;
@@ -48,6 +49,18 @@ namespace Faderly.Services
             public IntPtr hBalloonIcon;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NOTIFYICONIDENTIFIER
+        {
+            public uint cbSize;
+            public IntPtr hWnd;
+            public uint uID;
+            public Guid guidItem;
+        }
+
+        [DllImport("shell32.dll", PreserveSig = true)]
+        private static extern int Shell_NotifyIconGetRect(ref NOTIFYICONIDENTIFIER identifier, out Native.RECT location);
+
         [DllImport("shell32.dll", CharSet = CharSet.Unicode, EntryPoint = "Shell_NotifyIconW")]
         private static extern bool Shell_NotifyIcon(uint message, ref NOTIFYICONDATAW data);
 
@@ -61,14 +74,30 @@ namespace Faderly.Services
         private bool _disposed;
         private int _retries;
 
+        // Wheel support: raw mouse input is only switched on while the cursor is over the icon.
+        private readonly DispatcherTimer _hoverTimer;
+        private bool _wheelTracking;
+        private int _wheelRemainder;
+        private bool _scrollEnabled = true;
+
         public event EventHandler? LeftButtonDown;
         public event EventHandler? LeftClick;
         public event EventHandler? RightClick;
         public event EventHandler? BalloonClick;
 
+        /// <summary>Mouse wheel over the icon, in notches (positive = up). Supports fine-grained wheels.</summary>
+        public event EventHandler<int>? Scroll;
+
         public TrayIcon(string tooltip)
         {
             _tooltip = tooltip;
+
+            // Created first so no window message can ever find it missing.
+            _hoverTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            _hoverTimer.Tick += (_, _) =>
+            {
+                if (!IsCursorOverIcon()) StopWheelTracking();
+            };
 
             int size = Native.GetSystemMetrics(Native.SM_CXSMICON);
             if (size <= 0) size = 16;
@@ -96,6 +125,17 @@ namespace Faderly.Services
                 if (TryAdd() || ++_retries >= 60) _retryTimer.Stop();
             };
             if (!TryAdd()) _retryTimer.Start();
+
+        }
+
+        public bool ScrollEnabled
+        {
+            get => _scrollEnabled;
+            set
+            {
+                _scrollEnabled = value;
+                if (!value) StopWheelTracking();
+            }
         }
 
         /// <summary>The hidden window that receives tray messages.</summary>
@@ -137,15 +177,24 @@ namespace Faderly.Services
         {
             if (msg == CallbackMessage)
             {
+                int evt = (int)(lParam.ToInt64() & 0xFFFF);
+
+                if (evt == WM_MOUSEMOVE)
+                {
+                    StartWheelTracking();
+                    handled = true;
+                    return IntPtr.Zero;
+                }
+
                 // Button-down is handled immediately (not queued) so it's recorded before the click.
-                if ((int)(lParam.ToInt64() & 0xFFFF) == WM_LBUTTONDOWN)
+                if (evt == WM_LBUTTONDOWN)
                 {
                     LeftButtonDown?.Invoke(this, EventArgs.Empty);
                     handled = true;
                     return IntPtr.Zero;
                 }
 
-                EventHandler? handler = (int)(lParam.ToInt64() & 0xFFFF) switch
+                EventHandler? handler = evt switch
                 {
                     WM_LBUTTONUP => LeftClick,
                     WM_RBUTTONUP => RightClick,
@@ -157,6 +206,17 @@ namespace Faderly.Services
                     _window.Dispatcher.BeginInvoke(new Action(() => handler(this, EventArgs.Empty)));
                 handled = true;
             }
+            else if (msg == Native.WM_INPUT && _wheelTracking)
+            {
+                // Not marked handled: Windows needs DefWindowProc to clean up WM_INPUT.
+                int notches = ReadWheel(lParam);
+                if (notches != 0 && IsCursorOverIcon())
+                {
+                    var scroll = Scroll;
+                    if (scroll != null)
+                        _window.Dispatcher.BeginInvoke(new Action(() => scroll(this, notches)));
+                }
+            }
             else if (_taskbarCreatedMessage != 0 && msg == _taskbarCreatedMessage)
             {
                 // Explorer restarted: our icon is gone, add it back.
@@ -166,6 +226,78 @@ namespace Faderly.Services
             return IntPtr.Zero;
         }
 
+        // ---------- Wheel ----------
+
+        private void StartWheelTracking()
+        {
+            if (_wheelTracking || !_scrollEnabled || _disposed) return;
+            var device = new[]
+            {
+                new Native.RAWINPUTDEVICE { UsagePage = 0x01, Usage = 0x02, Flags = Native.RIDEV_INPUTSINK, Target = _window.Handle }
+            };
+            if (Native.RegisterRawInputDevices(device, 1, (uint)Marshal.SizeOf<Native.RAWINPUTDEVICE>()))
+            {
+                _wheelTracking = true;
+                _wheelRemainder = 0;
+                _hoverTimer.Start();
+            }
+        }
+
+        private void StopWheelTracking()
+        {
+            _hoverTimer.Stop();
+            if (!_wheelTracking) return;
+            _wheelTracking = false;
+            var device = new[]
+            {
+                new Native.RAWINPUTDEVICE { UsagePage = 0x01, Usage = 0x02, Flags = Native.RIDEV_REMOVE, Target = IntPtr.Zero }
+            };
+            Native.RegisterRawInputDevices(device, 1, (uint)Marshal.SizeOf<Native.RAWINPUTDEVICE>());
+        }
+
+        /// <summary>Whole wheel notches in this raw input packet (0 if it isn't a wheel event).</summary>
+        private int ReadWheel(IntPtr rawInput)
+        {
+            uint headerSize = (uint)(8 + 2 * IntPtr.Size); // RAWINPUTHEADER
+            uint size = 0;
+            Native.GetRawInputData(rawInput, Native.RID_INPUT, IntPtr.Zero, ref size, headerSize);
+            if (size < headerSize + 8 || size > 1024) return 0;
+
+            IntPtr buffer = Marshal.AllocHGlobal((int)size);
+            try
+            {
+                if (Native.GetRawInputData(rawInput, Native.RID_INPUT, buffer, ref size, headerSize) != size) return 0;
+                if ((uint)Marshal.ReadInt32(buffer, 0) != Native.RIM_TYPEMOUSE) return 0;
+
+                // RAWMOUSE: usFlags (2) + padding (2), then usButtonFlags (2), usButtonData (2).
+                ushort flags = (ushort)Marshal.ReadInt16(buffer, (int)headerSize + 4);
+                if ((flags & Native.RI_MOUSE_WHEEL) == 0) return 0;
+                short delta = Marshal.ReadInt16(buffer, (int)headerSize + 6);
+
+                _wheelRemainder += delta;
+                int notches = _wheelRemainder / 120;
+                _wheelRemainder -= notches * 120;
+                return notches;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
+        private bool IsCursorOverIcon()
+        {
+            if (!_added || !Native.GetCursorPos(out var pt)) return false;
+            var id = new NOTIFYICONIDENTIFIER
+            {
+                cbSize = (uint)Marshal.SizeOf<NOTIFYICONIDENTIFIER>(),
+                hWnd = _window.Handle,
+                uID = 1
+            };
+            if (Shell_NotifyIconGetRect(ref id, out var r) != 0) return false;
+            return pt.X >= r.Left && pt.X < r.Right && pt.Y >= r.Top && pt.Y < r.Bottom;
+        }
+
         private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max);
 
         public void Dispose()
@@ -173,6 +305,7 @@ namespace Faderly.Services
             if (_disposed) return;
             _disposed = true;
             _retryTimer.Stop();
+            StopWheelTracking();
             try
             {
                 if (_added)

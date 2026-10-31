@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using Faderly.Controls;
 using Faderly.Services;
 using Faderly.ViewModels;
 
@@ -12,6 +14,8 @@ namespace Faderly
         private readonly bool _startHidden;
         private readonly bool _justUpdated;
         private TrayIcon? _tray;
+        private HotkeyManager? _hotkeys;
+        private OsdWindow? _osd;
         private MainWindow? _window;
         private MixerViewModel? _vm;
         private UpdateService? _updater;
@@ -65,6 +69,21 @@ namespace Faderly
             var window = _window;
             CreateTray();
 
+            var vm = _vm;
+            _hotkeys = new HotkeyManager();
+            _hotkeys.FailuresChanged += (_, _) => vm.SetHotkeyFailures(_hotkeys?.Failed ?? Array.Empty<string>());
+            vm.HotkeysChanged += (_, _) => ApplyHotkeys();
+            // While a hotkey box is listening, release global hotkeys so the keys reach it.
+            HotkeyRecorder.RecordingStarted += OnRecordingStarted;
+            HotkeyRecorder.RecordingStopped += OnRecordingStopped;
+            ApplyHotkeys();
+
+            vm.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName == nameof(MixerViewModel.TrayScrollVolume) && _tray != null)
+                    _tray.ScrollEnabled = vm.TrayScrollVolume;
+            };
+
             var updater = _updater;
             updater.UpdateDownloaded += (_, _) => _tray?.ShowBalloon(
                 "Faderly update ready",
@@ -104,6 +123,73 @@ namespace Faderly
             tray.LeftClick += (_, _) => window.ToggleMixer();
             tray.RightClick += (_, _) => window.ShowTrayMenu(tray.Handle);
             _tray.BalloonClick += (_, _) => window.ShowMixer();
+            tray.ScrollEnabled = _vm?.TrayScrollVolume ?? true;
+            tray.Scroll += (_, notches) =>
+            {
+                if (_vm is { TrayScrollVolume: true } vm) ShowFeedback(vm.AdjustMaster(notches));
+            };
+        }
+
+        private void OnRecordingStarted(object? sender, EventArgs e) => _hotkeys?.Suspend();
+
+        private void OnRecordingStopped(object? sender, EventArgs e) => _hotkeys?.Resume();
+
+        /// <summary>(Re)register every global hotkey from the current settings.</summary>
+        private void ApplyHotkeys()
+        {
+            var vm = _vm;
+            var window = _window;
+            if (vm == null || window == null || _hotkeys == null) return;
+            var s = vm.Settings;
+            var list = new List<HotkeyRegistration>();
+
+            if (s.ToggleHotkey != null)
+                list.Add(new HotkeyRegistration("Open Faderly", s.ToggleHotkey, false, window.ToggleFromHotkey));
+
+            if (s.MicMuteHotkey != null)
+                list.Add(new HotkeyRegistration("Mute microphone", s.MicMuteHotkey, false,
+                    () => ShowFeedback(vm.ToggleMicMute(), always: true)));
+
+            if (s.ActiveAppVolumeKeys)
+            {
+                int mod = vm.ActiveAppModifierBits;
+                const int VolumeMute = 0xAD, VolumeDown = 0xAE, VolumeUp = 0xAF;
+                list.Add(new HotkeyRegistration($"{s.ActiveAppModifier} + Volume Up", HotkeyBinding.Create(mod, VolumeUp), true,
+                    () => ShowFeedback(vm.AdjustActiveApp(+2))));
+                list.Add(new HotkeyRegistration($"{s.ActiveAppModifier} + Volume Down", HotkeyBinding.Create(mod, VolumeDown), true,
+                    () => ShowFeedback(vm.AdjustActiveApp(-2))));
+                list.Add(new HotkeyRegistration($"{s.ActiveAppModifier} + Volume Mute", HotkeyBinding.Create(mod, VolumeMute), false,
+                    () => ShowFeedback(vm.ToggleActiveAppMute())));
+            }
+
+            foreach (var app in s.AppHotkeys)
+            {
+                string key = app.Key;
+                if (app.Up != null)
+                    list.Add(new HotkeyRegistration(app.Name + " up", app.Up, true, () => ShowFeedback(vm.AdjustApp(key, +2))));
+                if (app.Down != null)
+                    list.Add(new HotkeyRegistration(app.Name + " down", app.Down, true, () => ShowFeedback(vm.AdjustApp(key, -2))));
+                if (app.Mute != null)
+                    list.Add(new HotkeyRegistration(app.Name + " mute", app.Mute, false, () => ShowFeedback(vm.ToggleAppMute(key))));
+            }
+
+            _hotkeys.Set(list);
+        }
+
+        /// <summary>Show the on-screen indicator, unless the mixer itself is in front (it already shows the change).</summary>
+        private void ShowFeedback(VolumeFeedback? feedback, bool always = false)
+        {
+            if (feedback == null) return;
+            if (!always && _window != null && _window.IsInFront) return;
+            try
+            {
+                _osd ??= new OsdWindow();
+                _osd.ShowFeedback(feedback);
+            }
+            catch (Exception ex)
+            {
+                Log.WarnOnce("On-screen indicator", ex);
+            }
         }
 
         /// <summary>
@@ -154,6 +240,12 @@ namespace Faderly
 
             try { _tray?.Dispose(); } catch { }
             _tray = null;
+            HotkeyRecorder.RecordingStarted -= OnRecordingStarted;
+            HotkeyRecorder.RecordingStopped -= OnRecordingStopped;
+            try { _hotkeys?.Dispose(); } catch { }
+            _hotkeys = null;
+            try { _osd?.Close(); } catch { }
+            _osd = null;
             try { _showWait?.Unregister(null); } catch { }
             try { _showSignal?.Dispose(); } catch { }
             try { _window?.DisposeNative(); } catch { }

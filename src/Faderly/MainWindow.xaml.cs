@@ -19,17 +19,13 @@ namespace Faderly
     /// </summary>
     public partial class MainWindow : Window
     {
-        private const int HotkeyId = 0xF4D1;
-        private const uint VK_M = 0x4D;
         private const double ScreenGap = 4;
 
         private readonly MixerViewModel _vm;
         private readonly DispatcherTimer _saveTimer;
         private DateTime _lastHiddenUtc = DateTime.MinValue;
         private DateTime _modeSwitchedUtc = DateTime.MinValue;
-        private HwndSource? _source;
         private IntPtr _hwnd;
-        private bool _hotkeyRegistered;
         private double _slideFrom = 14;
         private bool _allowClose;
         private bool _trayDownWhileOpen;
@@ -344,39 +340,47 @@ namespace Faderly
 
         private void CloseToTray_Click(object sender, RoutedEventArgs e) => HideMixer();
 
-        // ---------- Native handle: global hotkey (Ctrl + Alt + M) ----------
+        // ---------- Native handle ----------
 
         public void InitializeNative()
         {
             _hwnd = new WindowInteropHelper(this).EnsureHandle();
-            _source = HwndSource.FromHwnd(_hwnd);
-            _source?.AddHook(WndProc);
-            _hotkeyRegistered = Native.RegisterHotKey(_hwnd, HotkeyId,
-                Native.MOD_CONTROL | Native.MOD_ALT | Native.MOD_NOREPEAT, VK_M);
-            _vm.HotkeyAvailable = _hotkeyRegistered;
-            if (!_hotkeyRegistered) Log.Info("Ctrl+Alt+M is already used by another app; hotkey disabled.");
             AllowTaskbarMinimize();
         }
 
         public void DisposeNative()
         {
-            if (_hwnd != IntPtr.Zero && _hotkeyRegistered) Native.UnregisterHotKey(_hwnd, HotkeyId);
-            _hotkeyRegistered = false;
-            _source?.RemoveHook(WndProc);
             _saveTimer.Stop();
             RememberPosition();
             SettingsStore.Save(_vm.Settings);
         }
 
-        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        /// <summary>The "Open Faderly" hotkey: hide if you're looking at it, otherwise bring it up.</summary>
+        public void ToggleFromHotkey()
         {
-            if (msg == Native.WM_HOTKEY && wParam.ToInt64() == HotkeyId)
+            if (IsVisible && WindowState != WindowState.Minimized && IsActive) HideMixer();
+            else ShowMixer();
+        }
+
+        /// <summary>True when the mixer is on screen and focused (so changes are already visible in it).</summary>
+        public bool IsInFront => IsVisible && WindowState != WindowState.Minimized && IsActive;
+
+        // ---------- App rows ----------
+
+        private void Row_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is FrameworkElement { DataContext: AppSessionGroup row })
             {
-                if (IsVisible && WindowState != WindowState.Minimized && IsActive) HideMixer();
-                else ShowMixer();
-                handled = true;
+                _vm.ToggleExpandCommand.Execute(row);
+                e.Handled = true;
             }
-            return IntPtr.Zero;
+        }
+
+        /// <summary>When an app's panel opens, scroll it into view.</summary>
+        private void ExpandedPanel_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            if (e.NewValue is true && sender is FrameworkElement panel)
+                Dispatcher.BeginInvoke(new Action(() => panel.BringIntoView()), DispatcherPriority.Loaded);
         }
 
         // ---------- Input ----------
@@ -384,8 +388,11 @@ namespace Faderly
         private void Window_KeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key != Key.Escape) return;
+            if (Keyboard.FocusedElement is Controls.HotkeyRecorder { IsRecording: true }) return;
             if (_vm.IsSettingsOpen) _vm.IsSettingsOpen = false;
             else if (_vm.IsDeviceListOpen) _vm.IsDeviceListOpen = false;
+            else if (_vm.IsMicListOpen) _vm.IsMicListOpen = false;
+            else if (_vm.ExpandedRow != null) _vm.Collapse();
             else if (!IsWindowMode) HideMixer();
             e.Handled = true;
         }

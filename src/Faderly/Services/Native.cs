@@ -120,18 +120,101 @@ namespace Faderly.Services
         [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
         private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int index, IntPtr value);
 
-        public static void AddWindowStyle(IntPtr hwnd, int style)
+        public static void AddWindowStyle(IntPtr hwnd, int style) => AddStyle(hwnd, GWL_STYLE, style);
+
+        private const int GWL_EXSTYLE = -20;
+        public const int WS_EX_TRANSPARENT = 0x00000020;
+        public const int WS_EX_TOOLWINDOW = 0x00000080;
+        public const int WS_EX_NOACTIVATE = 0x08000000;
+
+        public static void AddWindowExStyle(IntPtr hwnd, int style) => AddStyle(hwnd, GWL_EXSTYLE, style);
+
+        private static void AddStyle(IntPtr hwnd, int index, int style)
         {
             try
             {
-                long current = GetWindowLongPtr(hwnd, GWL_STYLE).ToInt64();
+                long current = GetWindowLongPtr(hwnd, index).ToInt64();
                 if ((current & style) == style) return;
-                SetWindowLongPtr(hwnd, GWL_STYLE, new IntPtr(current | (long)style));
+                SetWindowLongPtr(hwnd, index, new IntPtr(current | (long)style));
             }
             catch
             {
             }
         }
+
+        // ---------- Foreground app ----------
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr lParam);
+
+        /// <summary>
+        /// Process that owns the window you're using. Store/UWP apps are hosted by ApplicationFrameHost,
+        /// so for those the real app process is found from the child window.
+        /// </summary>
+        public static uint GetForegroundProcessId()
+        {
+            IntPtr hwnd = GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) return 0;
+            GetWindowThreadProcessId(hwnd, out uint pid);
+
+            string? path = GetProcessPath(pid);
+            if (path != null && path.EndsWith("\\ApplicationFrameHost.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                uint child = 0;
+                EnumChildWindows(hwnd, (h, _) =>
+                {
+                    GetWindowThreadProcessId(h, out uint p);
+                    if (p != 0 && p != pid) { child = p; return false; }
+                    return true;
+                }, IntPtr.Zero);
+                if (child != 0) pid = child;
+            }
+            return pid;
+        }
+
+        // ---------- Cursor / raw input (tray wheel) ----------
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT { public int X, Y; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RECT { public int Left, Top, Right, Bottom; }
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetCursorPos(out POINT point);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RAWINPUTDEVICE
+        {
+            public ushort UsagePage;
+            public ushort Usage;
+            public uint Flags;
+            public IntPtr Target;
+        }
+
+        public const int WM_INPUT = 0x00FF;
+        public const uint RIDEV_REMOVE = 0x00000001;
+        public const uint RIDEV_INPUTSINK = 0x00000100;
+        public const uint RID_INPUT = 0x10000003;
+        public const uint RIM_TYPEMOUSE = 0;
+        public const ushort RI_MOUSE_WHEEL = 0x0400;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] devices, uint count, uint size);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetRawInputData(IntPtr rawInput, uint command, IntPtr data, ref uint size, uint headerSize);
 
         // ---------- Global hotkey ----------
 

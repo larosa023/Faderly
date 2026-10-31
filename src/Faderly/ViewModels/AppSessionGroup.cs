@@ -2,24 +2,30 @@ using System;
 using System.Collections.Generic;
 using System.Windows.Input;
 using System.Windows.Media;
+using Faderly.Services;
 using NAudio.CoreAudioApi;
 
 namespace Faderly.ViewModels
 {
     /// <summary>
-    /// One row in the mixer. An app can own several audio sessions (browsers, games);
-    /// they're grouped so one slider controls them all.
+    /// One row in the mixer. An app can own several audio sessions (browsers, games), possibly on
+    /// different output devices; they're grouped so one slider controls them all.
     /// </summary>
     public sealed class AppSessionGroup : ObservableObject
     {
+        private readonly MixerViewModel _owner;
         private readonly List<AudioSessionControl> _sessions = new();
+        private IReadOnlyList<uint> _pids = Array.Empty<uint>();
         private double _volume;
         private bool _isMuted;
         private double _peak;
         private bool _syncing;
+        private string _deviceLabel = "";
+        private bool _isExpanded;
 
-        public AppSessionGroup(string key, string name, ImageSource? icon, bool isSystem)
+        public AppSessionGroup(MixerViewModel owner, string key, string name, ImageSource? icon, bool isSystem)
         {
+            _owner = owner;
             Key = key;
             Name = name;
             Icon = icon;
@@ -34,7 +40,12 @@ namespace Faderly.ViewModels
         public bool HasIcon => Icon != null;
         public string Initial => string.IsNullOrEmpty(Name) ? "?" : Name.Substring(0, 1).ToUpperInvariant();
 
+        /// <summary>System sounds can't be moved to another device or given hotkeys.</summary>
+        public bool CanCustomize => !IsSystem;
+
         public ICommand ToggleMuteCommand { get; }
+
+        public IReadOnlyList<uint> Pids => _pids;
 
         public double Volume
         {
@@ -72,9 +83,57 @@ namespace Faderly.ViewModels
             private set => SetProperty(ref _peak, value);
         }
 
-        /// <summary>Replace the sessions this row controls (only touches the list if it actually changed).</summary>
-        internal void SetSessions(List<AudioSessionControl> sessions)
+        /// <summary>Name of the output device this app plays through, when it isn't the Windows default.</summary>
+        public string DeviceLabel
         {
+            get => _deviceLabel;
+            internal set
+            {
+                if (SetProperty(ref _deviceLabel, value)) OnPropertyChanged(nameof(DeviceLabelText));
+            }
+        }
+
+        public string DeviceLabelText => _deviceLabel.Length == 0 ? "" : "  ·  " + _deviceLabel;
+
+        public bool IsExpanded
+        {
+            get => _isExpanded;
+            internal set => SetProperty(ref _isExpanded, value);
+        }
+
+        // ----- Per-app hotkeys (stored in settings, keyed by exe) -----
+
+        public HotkeyBinding? UpHotkey
+        {
+            get => _owner.GetAppHotkey(Key, AppHotkeyKind.Up);
+            set => _owner.SetAppHotkey(this, AppHotkeyKind.Up, value);
+        }
+
+        public HotkeyBinding? DownHotkey
+        {
+            get => _owner.GetAppHotkey(Key, AppHotkeyKind.Down);
+            set => _owner.SetAppHotkey(this, AppHotkeyKind.Down, value);
+        }
+
+        public HotkeyBinding? MuteHotkey
+        {
+            get => _owner.GetAppHotkey(Key, AppHotkeyKind.Mute);
+            set => _owner.SetAppHotkey(this, AppHotkeyKind.Mute, value);
+        }
+
+        internal void NotifyHotkeysChanged()
+        {
+            OnPropertyChanged(nameof(UpHotkey));
+            OnPropertyChanged(nameof(DownHotkey));
+            OnPropertyChanged(nameof(MuteHotkey));
+        }
+
+        // ----- Plumbing -----
+
+        /// <summary>Replace the sessions this row controls (only touches the list if it actually changed).</summary>
+        internal void SetSessions(List<AudioSessionControl> sessions, IReadOnlyList<uint> pids)
+        {
+            _pids = pids;
             if (sessions.Count == _sessions.Count)
             {
                 bool same = true;
@@ -108,6 +167,20 @@ namespace Faderly.ViewModels
             {
                 _syncing = false;
             }
+        }
+
+        /// <summary>Hotkey / knob step. Changing the level of a muted app unmutes it.</summary>
+        internal void Nudge(int delta)
+        {
+            SyncFromSystem();
+            Volume = _volume + delta;
+            if (_isMuted && delta > 0) IsMuted = false;
+        }
+
+        internal void ToggleMuteFromHotkey()
+        {
+            SyncFromSystem();
+            IsMuted = !_isMuted;
         }
 
         internal void UpdatePeak()

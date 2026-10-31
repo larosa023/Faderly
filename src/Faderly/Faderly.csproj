@@ -16,7 +16,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
 
     <!-- Bump this and push to main to publish a new release + auto-update -->
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <Product>Faderly</Product>
     <Description>A clean, modern volume mixer for Windows.</Description>
     <Copyright>Copyright © 2026 Anthony</Copyright>
@@ -26,6 +26,8 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <DebugType>embedded</DebugType>
+    <!-- Raw calls into the per-app device API (see Services/AudioPolicy.cs) -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

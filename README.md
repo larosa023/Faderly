@@ -15,6 +15,11 @@
 
 - **Per-app volume.** Every app playing audio gets its own fader, mute button and live level meter. Apps with several audio streams (browsers, games) are grouped into one row.
 - **Master volume and output switching.** Change the default playback device right from the mixer.
+- **Per-app output device.** Send one app to your headphones and another to your speakers from the app's **⋯** panel (or right-click its row). Apps on a non-default device show which one next to their name.
+- **Microphone.** Mic volume, mute, device switching and a live "In use by…" status, plus a mute hotkey (**Ctrl + Alt + N** by default).
+- **Knob and hotkey control.** Hold **Ctrl** while turning a volume knob or pressing volume keys to change only the app you're in (Shift or Alt also available). Give any app its own volume up / down / mute hotkeys from its **⋯** panel. An on-screen indicator confirms each change.
+- **Hide apps.** Hide helpers you never touch from an app's **⋯** panel; bring them back in **Settings → Hidden apps**.
+- **Scroll on the tray icon** to change master volume.
 - **Lives in the tray, or as a regular app.** By default it's a tray popup: click the tray icon or press **Ctrl + Alt + M**, and click away or press **Esc** to hide it. Prefer a normal window? Click the pop-out button in the header (or **Settings → Window mode**, or the tray menu) to get a draggable app window with a taskbar button that stays open. It remembers where you put it.
 - **Scroll to adjust.** Mouse wheel over any fader moves it 2% (hold Shift for 10%).
 - **Themes.** System (follows Windows light/dark), Dark, Light, Midnight (true black), Nord, Ocean, Forest, Sunset and Rosé. Pick one in **Settings → Appearance**; it switches instantly.
